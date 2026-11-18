@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.9';
+const VERSION = '1.10';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -63,7 +63,7 @@ function localDateTime(ts, tz) {
 const fmtCache = {};
 function fmt(ts, tz, kind) {
   const k = tz + kind;
-  const opts = { time: { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }, day: { weekday: 'short', day: 'numeric', month: 'short' }, mon: { month: 'short' }, dnum: { day: 'numeric' }, full: { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' } }[kind];
+  const opts = { time: { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }, day: { weekday: 'short', day: 'numeric', month: 'short' }, mon: { month: 'short' }, dnum: { day: 'numeric' }, full: { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }, short: { day: 'numeric', month: 'short' }, year: { year: 'numeric' } }[kind];
   const f = fmtCache[k] || (fmtCache[k] = new Intl.DateTimeFormat('en-GB', Object.assign({ timeZone: tz }, opts)));
   return f.format(new Date(ts));
 }
@@ -188,7 +188,7 @@ function fromAdb(x) {
 /* ---------- Alerts (no server: recorded when the app refreshes, shown in-app) ---------- */
 const ALERT_KIND = { delay: 'delays', gate: 'gates', landed: 'landed', belt: 'belt' };
 function addAlert(f, type, title, sub) {
-  if (!db.settings.alerts[ALERT_KIND[type]]) return;
+  if (f.friend || !db.settings.alerts[ALERT_KIND[type]]) return;
   db.alerts.unshift({ id: 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), flightId: f.id, type, title, sub, at: Date.now(), read: false });
   db.alerts = db.alerts.slice(0, 200);
 }
@@ -304,7 +304,8 @@ function derive(f) {
   const dep = (L && L.depBest) || depS, arr = (L && L.arrBest) || arrS;
   return Object.assign({}, f, { A, B, depS, arrS, dep, arr, live: L, mi: gcMiles(A, B), dur: arr - dep });
 }
-function flightsD() { return db.flights.map(derive).filter(Boolean); }
+function flightsD() { return db.flights.filter((f) => !f.friend).map(derive).filter(Boolean); }
+function friendsD() { return db.flights.filter((f) => f.friend).map(derive).filter(Boolean); }
 function findD(id) { const f = db.flights.find((x) => x.id === id); return f ? derive(f) : null; }
 const lateStr = (min) => (min >= 60 ? `${Math.floor(min / 60)}h ${pad(min % 60)}m late` : `${min}m late`);
 const LIVE_WORD = { CheckIn: 'Check-in open', Boarding: 'Boarding', GateClosed: 'Gate closed' };
@@ -412,17 +413,25 @@ function buildStyle() {
     if (mode === 'night') layers.push({ id: 'borders', type: 'line', source: 'omt', 'source-layer': 'boundary', filter: ['all', ['==', ['get', 'admin_level'], 2], ['!=', ['get', 'maritime'], 1]], paint: { 'line-color': 'rgba(150,180,220,0.25)', 'line-width': 0.7 } });
   }
   const name = ['coalesce', ['get', 'name:latin'], ['get', 'name_en'], ['get', 'name']];
-  layers.push({ id: 'cities', type: 'symbol', source: 'omt', 'source-layer': 'place', minzoom: 2.5,
+  layers.push({ id: 'cities', type: 'symbol', source: 'omt', 'source-layer': 'place', minzoom: 3.6,
     filter: ['==', ['get', 'class'], 'city'],
-    layout: { 'text-field': name, 'text-font': ['Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 3, 10, 8, 14], 'symbol-sort-key': ['coalesce', ['get', 'rank'], 10], 'text-padding': 4 },
-    paint: { 'text-color': label, 'text-halo-color': halo, 'text-halo-width': 1.2 } });
+    layout: { 'text-field': name, 'text-font': ['Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 3.6, 10, 8, 13], 'symbol-sort-key': ['coalesce', ['get', 'rank'], 10], 'text-padding': 10 },
+    paint: { 'text-color': label, 'text-halo-color': halo, 'text-halo-width': 1.2, 'text-opacity': ['interpolate', ['linear'], ['zoom'], 3.6, 0, 4.2, 0.85] } });
+  const core = dark || onImage ? '#D8F3FF' : arc;
+  const main = ['in', ['get', 'k'], ['literal', ['full', 'flown']]];
   layers.push(
-    { id: 'l-glow', type: 'line', source: 'lines', filter: ['in', ['get', 'k'], ['literal', ['full', 'flown']]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 9, 'line-blur': 6, 'line-opacity': 0.5 } },
-    { id: 'l-dim', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'dim'], layout: { 'line-cap': 'round' }, paint: { 'line-color': arc, 'line-width': 1.6, 'line-opacity': 0.55 } },
-    { id: 'l-rest', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'rest'], layout: { 'line-cap': 'round' }, paint: { 'line-color': arc, 'line-width': 2, 'line-opacity': 0.8, 'line-dasharray': [0.5, 3] } },
-    { id: 'l-main', type: 'line', source: 'lines', filter: ['in', ['get', 'k'], ['literal', ['full', 'flown']]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 2.6 } },
-    { id: 'ap-dot', type: 'circle', source: 'aps', paint: { 'circle-radius': 4.5, 'circle-color': arc, 'circle-stroke-color': onImage ? '#FFFFFF' : (dark ? '#0B1220' : '#FFFFFF'), 'circle-stroke-width': 1.5 } },
-    { id: 'ap-lbl', type: 'symbol', source: 'aps', layout: { 'text-field': ['get', 'code'], 'text-font': ['Noto Sans Bold'], 'text-size': 12, 'text-anchor': 'left', 'text-offset': [0.7, 0], 'text-allow-overlap': true, 'text-letter-spacing': 0.08 }, paint: { 'text-color': onImage ? '#FFFFFF' : (dark ? '#CFE3FF' : '#18324F'), 'text-halo-color': onImage ? 'rgba(0,0,0,0.8)' : halo, 'text-halo-width': 1.4 } }
+    { id: 'l-halo', type: 'line', source: 'lines', filter: main, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': ['interpolate', ['linear'], ['zoom'], 1, 12, 5, 18], 'line-blur': ['interpolate', ['linear'], ['zoom'], 1, 10, 5, 16], 'line-opacity': 0.28 } },
+    { id: 'l-glow', type: 'line', source: 'lines', filter: main, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 5, 'line-blur': 3, 'line-opacity': 0.55 } },
+    { id: 'l-dim', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'dim'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 1.4, 'line-opacity': 0.5, 'line-dasharray': [1, 2.5] } },
+    { id: 'l-rest', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'rest'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 1.8, 'line-opacity': 0.75, 'line-dasharray': [1, 2] } },
+    { id: 'l-main', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'full'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 2.2 } },
+    { id: 'l-flown', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'flown'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': core, 'line-width': 2.8 } },
+    { id: 'ap-ring', type: 'circle', source: 'aps', filter: ['==', ['get', 'sel'], 1], paint: { 'circle-radius': 15, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': core, 'circle-stroke-width': 1.6, 'circle-stroke-opacity': 0.7 } },
+    { id: 'ap-dot', type: 'circle', source: 'aps', paint: { 'circle-radius': ['case', ['==', ['get', 'sel'], 1], 6, ['==', ['get', 'pri'], 0], 4.5, 3.2], 'circle-color': core, 'circle-stroke-color': onImage || dark ? '#0B1220' : '#FFFFFF', 'circle-stroke-width': 1.5 } },
+    { id: 'ap-hit', type: 'circle', source: 'aps', paint: { 'circle-radius': 18, 'circle-color': '#000', 'circle-opacity': 0.01 } },
+    { id: 'ap-lbl', type: 'symbol', source: 'aps', layout: { 'text-field': ['get', 'code'], 'text-font': ['Noto Sans Bold'], 'text-size': ['case', ['==', ['get', 'pri'], 0], 11.5, 10.5], 'text-variable-anchor': ['left', 'right', 'top', 'bottom'], 'text-radial-offset': 0.75, 'text-justify': 'auto', 'text-allow-overlap': false, 'text-optional': true, 'text-padding': 3, 'symbol-sort-key': ['get', 'pri'], 'text-letter-spacing': 0.06 },
+      paint: { 'text-color': onImage ? '#FFFFFF' : (dark ? '#CFE3FF' : '#18324F'), 'text-halo-color': onImage ? 'rgba(0,0,0,0.75)' : halo, 'text-halo-width': 1.3,
+        'text-opacity': ['case', ['==', ['get', 'pri'], 0], 1, ['interpolate', ['linear'], ['zoom'], 1.8, 0, 2.4, 0.9]] } }
   );
   return {
     version: 8, projection: { type: 'globe' },
@@ -440,7 +449,11 @@ function initMap() {
   } catch (e) { map = null; $('#map-fallback').textContent = "This phone can't draw the 3D map"; $('#map-fallback').style.display = 'block'; return; }
   styleKey = globeMode() + currentTheme();
   if (map.touchZoomRotate && map.touchZoomRotate.disableRotation) map.touchZoomRotate.disableRotation();
-  map.on('load', () => { mapReady = true; if (lastRoutes) drawRoutes(lastRoutes.routes); });
+  map.on('load', () => { mapReady = true; if (lastRoutes) drawRoutes(lastRoutes.routes, lastRoutes.opts); });
+  map.on('click', 'ap-hit', (e) => {
+    const ft = e.features && e.features[0]; const code = ft && ft.properties && ft.properties.code;
+    if (code && AP[code] && location.hash !== '#/airport/' + code) location.hash = '#/airport/' + code;
+  });
   map.on('error', (e) => {
     if (e && e.sourceId === 'sat' && globeMode() === 'night' && ++nightErrors > 6) { nightBroken = true; restyle(); }
   });
@@ -448,7 +461,7 @@ function initMap() {
 function restyle() {
   if (!map) return;
   const k = globeMode() + currentTheme();
-  if (k === styleKey) { if (mapReady) { try { const arc = cssVar('--arc'); ['l-glow', 'l-dim', 'l-rest', 'l-main'].forEach((id) => map.setPaintProperty(id, 'line-color', arc)); map.setPaintProperty('ap-dot', 'circle-color', arc); } catch (e) {} } return; }
+  if (k === styleKey) { if (mapReady) { try { const arc = cssVar('--arc'); ['l-halo', 'l-glow', 'l-dim', 'l-rest', 'l-main'].forEach((id) => map.setPaintProperty(id, 'line-color', arc));  } catch (e) {} } return; }
   styleKey = k;
   map.setStyle(buildStyle(), { diff: false });
 }
@@ -487,7 +500,11 @@ function drawRoutes(routes, opts = {}) {
       ls([here].concat(pts.slice(k + 1)), 'rest');
       plane = { lng: here[1], lat: here[0], brg };
     } else ls(pts, r.dim ? 'dim' : 'full');
-    [r.a, r.b].forEach((ap) => aps.set(ap.code, { type: 'Feature', properties: { code: ap.code }, geometry: { type: 'Point', coordinates: [ap.lon, ap.lat] } }));
+    [r.a, r.b].forEach((ap) => {
+      const pri = r.dim ? 1 : 0, prev = aps.get(ap.code);
+      if (prev && prev.properties.pri <= pri) return;
+      aps.set(ap.code, { type: 'Feature', properties: { code: ap.code, pri: routes.length > 6 && !opts.sel ? 1 : pri, sel: opts.sel === ap.code ? 1 : 0 }, geometry: { type: 'Point', coordinates: [ap.lon, ap.lat] } });
+    });
   });
   lineData = { type: 'FeatureCollection', features: feats };
   apData = { type: 'FeatureCollection', features: [...aps.values()] };
@@ -543,7 +560,7 @@ function fitTo(bounds, force) {
   zoom = Math.max(zoom, zoomFor(Math.min(avail, 260), cLat) - 0.4);
   map.easeTo({ center: [cLon, cLat], zoom, bearing: 0, pitch: 0, padding: { top, bottom, left: 0, right: 0 }, duration, essential: true });
 }
-function refit() { if (lastRoutes && !userMoved) drawRoutes(lastRoutes.routes, { fit: true }); }
+function refit() { if (lastRoutes && !userMoved) drawRoutes(lastRoutes.routes, Object.assign({}, lastRoutes.opts, { fit: true, force: false })); }
 
 /* ---------- Screen size (iPhone home-screen apps report a short height) ---------- */
 const appEl = $('#app');
@@ -588,6 +605,7 @@ function computeSnaps() {
 function setSnap(s, anim = true) {
   snap = s;
   computeSnaps();
+  sheet.style.transition = '';
   sheet.classList.toggle('anim', anim);
   sheet.style.transform = `translateY(${snaps[s]}px)`;
   sheet.style.setProperty('--off', snaps[s] + 'px');
@@ -597,34 +615,90 @@ function visibleSheet() {
   computeSnaps();
   return sheet.offsetHeight - (snaps[snap] || 0);
 }
-let drag = null;
+/* Dragging the card: follows the finger 1:1 (drawn once per frame), stretches a little past the ends,
+   and on release goes to the stop you flicked towards, with a quick ease that matches the speed. */
+let drag = null, dragRaf = 0;
+const SNAP_ORDER = ['full', 'half', 'peek'];
+function rubber(v, lo, hi) { if (v < lo) return lo - Math.sqrt(lo - v) * 3; if (v > hi) return hi + Math.sqrt(v - hi) * 3; return v; }
+function paintDrag() { dragRaf = 0; if (drag) sheet.style.transform = `translateY(${drag.cur}px)`; }
+function dragStart(y) {
+  computeSnaps();
+  sheet.classList.remove('anim'); sheet.style.transition = 'none';
+  const st = getComputedStyle(sheet).transform; let now = snaps[snap];
+  if (st && st !== 'none') { const m = st.match(/matrix.*\((.+)\)/); if (m) { const p = m[1].split(','); now = parseFloat(p[p.length === 6 ? 5 : 13]) || now; } }
+  drag = { y, start: now, cur: now, moved: false, samples: [[performance.now(), y]] };
+}
+function dragMove(y) {
+  if (!drag) return;
+  const dy = y - drag.y;
+  if (Math.abs(dy) > 4) drag.moved = true;
+  drag.cur = rubber(drag.start + dy, 0, snaps.peek);
+  const t = performance.now(); drag.samples.push([t, y]); while (drag.samples.length > 2 && t - drag.samples[0][0] > 90) drag.samples.shift();
+  if (!dragRaf) dragRaf = requestAnimationFrame(paintDrag);
+}
+function settleTo(s, velocity) {
+  const from = drag ? drag.cur : snaps[snap];
+  snap = s; computeSnaps();
+  const to = snaps[s], dist = Math.abs(to - from);
+  const ms = reduceMotion() ? 0 : Math.round(Math.max(180, Math.min(420, dist / Math.max(0.9, Math.abs(velocity || 0) * 1.4) + 120)));
+  sheet.style.transition = ms ? `transform ${ms}ms cubic-bezier(.22,.9,.3,1)` : 'none';
+  sheet.style.transform = `translateY(${to}px)`;
+  sheet.style.setProperty('--off', to + 'px');
+}
+function endDrag(cancel) {
+  if (!drag) return;
+  const d = drag;
+  if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
+  const was = snap;
+  const s0 = d.samples[0], s1 = d.samples[d.samples.length - 1];
+  const v = s1 && s0 && s1[0] > s0[0] ? (s1[1] - s0[1]) / (s1[0] - s0[0]) : 0; // px per ms, + is down
+  let best;
+  if (!d.moved) best = cancel ? snap : (snap === 'full' ? 'half' : 'full');
+  else if (Math.abs(v) > 0.45) {
+    // a flick: go one stop in that direction from where the card is now
+    const pos = d.cur, stops = SNAP_ORDER.map((k) => [k, snaps[k]]);
+    best = v > 0 ? (stops.find(([, y]) => y > pos + 8) || stops[2])[0] : ([...stops].reverse().find(([, y]) => y < pos - 8) || stops[0])[0];
+  } else {
+    const aim = d.cur + v * 160;
+    best = SNAP_ORDER.reduce((b, k) => (Math.abs(snaps[k] - aim) < Math.abs(snaps[b] - aim) ? k : b), 'full');
+  }
+  settleTo(best, v);
+  drag = null;
+  if (best !== was && best !== 'full') setTimeout(refit, 80);
+}
 grab.addEventListener('pointerdown', (e) => {
   if (document.body.classList.contains('no-map')) return;
   if (e.target.closest('button,a,input,select,label')) return;
-  computeSnaps();
-  drag = { y: e.clientY, start: snaps[snap], cur: snaps[snap], moved: false };
+  dragStart(e.clientY);
   try { grab.setPointerCapture(e.pointerId); } catch (_) {}
-  sheet.classList.remove('anim');
 });
-grab.addEventListener('pointermove', (e) => {
-  if (!drag) return;
-  const dy = e.clientY - drag.y;
-  if (Math.abs(dy) > 5) drag.moved = true;
-  drag.cur = Math.min(snaps.peek, Math.max(0, drag.start + dy));
-  sheet.style.transform = `translateY(${drag.cur}px)`;
-});
-function endDrag(cancel) {
-  if (!drag) return;
-  const d = drag; drag = null;
-  if (!d.moved) { if (!cancel) { setSnap(snap === 'full' ? 'half' : 'full'); if (snap === 'half') setTimeout(refit, 60); } else setSnap(snap); return; }
-  const best = ['full', 'half', 'peek'].reduce((b, k) => (Math.abs(snaps[k] - d.cur) < Math.abs(snaps[b] - d.cur) ? k : b), 'full');
-  const was = snap;
-  setSnap(best);
-  if (best !== was && best !== 'full') setTimeout(refit, 60);
-}
+grab.addEventListener('pointermove', (e) => dragMove(e.clientY));
 grab.addEventListener('pointerup', () => endDrag(false));
 grab.addEventListener('pointercancel', () => endDrag(true));
-function onResize() { setAppHeight(); if (!document.body.classList.contains('no-map')) setSnap(snap, false); moveTabPill(pillTab); if (map) { map.resize(); if (lastRoutes) drawRoutes(lastRoutes.routes); } }
+/* Dragging from the card's content: moves the card unless it's fully open and you're scrolling the list. */
+(() => {
+  const content = $('#content');
+  let t0 = null, mode = null;
+  content.addEventListener('touchstart', (e) => {
+    if (document.body.classList.contains('no-map') || e.touches.length !== 1) { t0 = null; return; }
+    t0 = { y: e.touches[0].clientY, x: e.touches[0].clientX }; mode = null;
+  }, { passive: true });
+  content.addEventListener('touchmove', (e) => {
+    if (!t0) return;
+    const y = e.touches[0].clientY, dy = y - t0.y, dx = e.touches[0].clientX - t0.x;
+    if (!mode) {
+      if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
+      if (Math.abs(dx) > Math.abs(dy)) { mode = 'none'; return; }
+      const atTop = content.scrollTop <= 0;
+      mode = (snap !== 'full' || (atTop && dy > 0)) ? 'sheet' : 'none';
+      if (mode === 'sheet') { dragStart(t0.y); drag.moved = true; }
+    }
+    if (mode === 'sheet') { e.preventDefault(); dragMove(y); }
+  }, { passive: false });
+  const end = () => { if (mode === 'sheet') endDrag(false); t0 = null; mode = null; };
+  content.addEventListener('touchend', end); content.addEventListener('touchcancel', end);
+})();
+function onResize() { setAppHeight(); if (!document.body.classList.contains('no-map')) setSnap(snap, false); moveTabPill(pillTab); if (map) { map.resize(); if (lastRoutes) drawRoutes(lastRoutes.routes, Object.assign({}, lastRoutes.opts, { fit: true })); } }
 window.addEventListener('resize', onResize);
 window.addEventListener('orientationchange', () => setTimeout(onResize, 250));
 
@@ -650,7 +724,7 @@ function layout({ useMap = true, tabs = true, snapTo = 'half', left = '', right 
   if (posTimer) { clearInterval(posTimer); posTimer = null; }
   const wasMap = !document.body.dataset.nomap;
   document.body.dataset.nomap = useMap ? '' : '1';
-  if (useMap) { initMap(); setSnap(snapTo, navDir != null && wasMap && !reduceMotion()); } else { sheet.classList.remove('anim'); sheet.style.transform = 'none'; }
+  if (useMap) { initMap(); setSnap(snapTo, navDir != null && wasMap && !reduceMotion()); } else { sheet.classList.remove('anim'); sheet.style.transition = ''; sheet.style.transform = 'none'; }
   $('#content').scrollTop = 0;
 }
 let navDir = null, prevScreen = null, pillTab = null;
@@ -797,7 +871,7 @@ function happenedHTML(f) {
     <ol class="happened">${list.map((x) => `<li>${alertIcon(x.type)}<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800">${esc(x.title)}</div><div class="muted" style="font-size:12px">${esc(x.sub || '')}</div></div><span class="muted num" style="font-size:11px">${whenStr(x.at)}</span></li>`).join('')}</ol>`;
 }
 function leaveCard(f, st) {
-  if (f.demo || !(st.key === 'sched' || st.key === 'soon') || f.dep < Date.now()) return '';
+  if (f.demo || f.friend || !(st.key === 'sched' || st.key === 'soon') || f.dep < Date.now()) return '';
   const h = leaveHOf(f), al = db.settings.alerts;
   const leaveAt = f.dep - h * 3600000;
   return `<div class="card" style="gap:10px"><div class="between"><h2>Leave for the airport</h2><span class="num" style="font-size:13px;font-weight:800">${al.leave ? `by ${fmt(leaveAt, f.A.tz, 'time')}` : ''}</span></div>
@@ -805,6 +879,73 @@ function leaveCard(f, st) {
       <button class="round cal" data-act="cal" data-v="${esc(f.id)}" aria-label="Add reminders to Calendar" style="margin-left:auto">${AL_ICON.cal}</button></div>
     <div class="note">Before take-off${f.live && f.live.depBest ? ', moved with any delay' : ''}. Tap the calendar to get the reminder${al.checkin ? ' and a check-in alert 24h before' : ''} on your phone, even with the app closed.</div></div>`;
 }
+/* ---------- Friends ---------- */
+const AV_COLS = ['#FFC14D', '#7EE0A1', '#B9A6FF', '#FF9C8A', '#6FD3FF', '#F5A3D8', '#C8E66B'];
+function avatarHTML(name, size = 40) {
+  const n = String(name || '?').trim(); let h = 0; for (const c of n) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const ini = n.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
+  return `<span class="av" aria-hidden="true" style="width:${size}px;height:${size}px;border-radius:${size / 2}px;background:${AV_COLS[h % AV_COLS.length]}">${esc(ini)}</span>`;
+}
+let friendsFilter = 'all';
+function friendsView() {
+  layout({ tab: 'friends', snapTo: 'half' });
+  const now = Date.now();
+  const all = friendsD().map((f) => Object.assign(f, { st: status(f, now) }));
+  const groupOf = (f) => (f.st.key === 'air' ? 'air' : (f.arr <= now || f.st.key === 'landed' || f.st.key === 'cancel' || f.st.key === 'divert') ? 'landed' : 'up');
+  const recentCut = now - 3 * 86400000;
+  let list = all.filter((f) => friendsFilter === 'all' ? (groupOf(f) !== 'landed' || f.arr > recentCut) : groupOf(f) === friendsFilter);
+  const rank = { air: 0, up: 1, landed: 2 };
+  list.sort((p, q) => rank[groupOf(p)] - rank[groupOf(q)] || (groupOf(p) === 'landed' ? q.arr - p.arr : p.dep - q.dep));
+  $('#grab-content').innerHTML = `<div class="between" style="padding-bottom:8px"><h1>Friends</h1><a class="round addbtn" href="#/friends/add" aria-label="Add a friend's flight">${ICON.plus}</a></div>
+    <div class="chips" role="group" aria-label="Show">${[['all', 'All'], ['air', 'In the air'], ['up', 'Upcoming'], ['landed', 'Landed']].map(([k, l]) => `<button data-act="friendsFilter" data-v="${k}" aria-pressed="${friendsFilter === k}">${l}</button>`).join('')}</div>`;
+  const when = (f) => {
+    const g = groupOf(f);
+    if (g === 'air') return `lands ${fmt(f.arr, f.B.tz, 'time')}`;
+    if (g === 'landed') return f.st.key === 'landed' ? `landed ${agoStr(now - f.arr)}` : f.st.label;
+    return `${fmt(f.dep, f.A.tz, 'day')} ${fmt(f.dep, f.A.tz, 'time')}`;
+  };
+  const pillFor = (f) => { const g = groupOf(f); if (g === 'up' && !/late|delay/i.test(f.st.label) && f.st.key !== 'soon') return `<span class="pill grey">${esc(fmt(f.dep, f.A.tz, 'short'))}</span>`; return pill(f.st); };
+  $('#content').innerHTML = `<div class="stack">
+    ${list.length ? `<ul class="flist">${list.map((f) => `<li><a href="#/flight/${esc(f.id)}">${avatarHTML(f.friend)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:800">${f.from} → ${f.to}</div><div class="muted" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(f.friend)} · ${esc(prettyNo(f) || 'Flight')} · ${esc(when(f))}</div></div>${pillFor(f)}</a></li>`).join('')}</ul>`
+      : `<div class="card empty"><div style="font-size:16px;font-weight:800">${all.length ? 'Nothing here' : 'No friends\u2019 flights yet'}</div><div class="note">${all.length ? 'Try another filter.' : 'Add a friend\u2019s flight by its number and date to follow it here.'}</div>${all.length ? '' : `<a class="btn" href="#/friends/add">${ICON.plus}Add a friend\u2019s flight</a>`}</div>`}
+    <div class="note">Friends' flights refresh about hourly on travel day, every 30 min in the air, and once after landing — so they use only a few lookups each. They don't count in your Passport.</div>
+  </div>`;
+  const shown = list.filter((f) => groupOf(f) !== 'landed');
+  const routesAt = (t) => (shown.length ? shown : list).slice(0, 12).map((f, i) => ({ a: f.A, b: f.B, progress: groupOf(f) === 'air' ? progress(f, t) : null, pos: groupOf(f) === 'air' ? freshPos(f) : null, dim: groupOf(f) === 'landed' || (groupOf(f) === 'up' && i > 2) }));
+  drawRoutes(routesAt(now));
+  if (shown.some((f) => groupOf(f) === 'air')) mapRefresher = () => drawRoutes(routesAt(Date.now()), { fit: false });
+}
+
+/* ---------- Airport (tap one on the globe) ---------- */
+const regionName = (() => { try { const dn = new Intl.DisplayNames(['en'], { type: 'region' }); return (cc) => { try { return dn.of(cc) || cc; } catch (e) { return cc; } }; } catch (e) { return (cc) => cc; } })();
+function airportView(code) {
+  const A = AP[code];
+  if (!A) { location.hash = '#/'; return; }
+  const back = prevHash && !prevHash.startsWith('#/airport') ? prevHash : '#/';
+  layout({ tabs: false, snapTo: 'half', left: `<a class="round" href="${esc(back)}" aria-label="Close airport">${ICON.close}</a>` });
+  const now = Date.now();
+  const touch = (f) => f.from === code || f.to === code;
+  const mine = flightsD().filter(touch), friends = friendsD().filter(touch);
+  const up = mine.concat(friends).filter((f) => f.arr > now).sort((p, q) => p.dep - q.dep).slice(0, 5);
+  const before = mine.filter((f) => f.arr <= now).sort((p, q) => q.dep - p.dep).slice(0, 5);
+  const diffH = (tzOffset(now, A.tz) - tzOffset(now, HOME_TZ)) / 3600000;
+  const diff = diffH === 0 ? 'Same' : (diffH > 0 ? '+' : '−') + (Math.abs(diffH) % 1 ? Math.abs(diffH).toFixed(1).replace('.5', '½') : Math.abs(diffH)) + 'h';
+  $('#grab-content').innerHTML = `<div class="row" style="gap:12px;padding-bottom:6px">${flap(code, 'md')}<div style="flex:1;min-width:0"><div style="font-size:17px;font-weight:800">${esc(A.name)}</div><div class="muted" style="font-size:12px">${esc(A.city)} · ${esc(regionName(A.cc))}</div></div></div>`;
+  const row = (f) => `<a class="mrow" href="#/flight/${esc(f.id)}"><span class="mdate"><span>${fmt(f.dep, f.A.tz, 'mon').toUpperCase()}</span><span>${fmt(f.dep, f.A.tz, 'dnum')}</span></span><div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:800">${f.from} → ${f.to}</div><div class="muted" style="font-size:12px">${f.friend ? esc(f.friend) + ' · ' : ''}${esc(prettyNo(f) || 'Flight')} · ${f.arr > now ? fmt(f.dep, f.A.tz, 'time') : fmt(f.dep, f.A.tz, 'year')}</div></div><span class="muted">›</span></a>`;
+  $('#content').innerHTML = `<div class="stack" style="padding-top:10px">
+    <div class="grid3">
+      <div class="stat"><span class="lbl">Local time</span><span class="big num" data-clock="${esc(A.tz)}">${fmt(now, A.tz, 'time')}</span></div>
+      <div class="stat"><span class="lbl">vs you</span><span class="big">${diff}</span></div>
+      <div class="stat"><span class="lbl">Your visits</span><span class="big">${mine.length} <span class="muted" style="font-size:12px">flight${mine.length === 1 ? '' : 's'}</span></span></div>
+    </div>
+    ${up.length ? `<div><div class="lbl" style="margin-bottom:2px">Coming up</div>${up.map(row).join('')}</div>` : ''}
+    ${before.length ? `<div><div class="lbl" style="margin-bottom:2px">Before</div>${before.map(row).join('')}</div>` : ''}
+    ${!up.length && !before.length ? '<div class="note">No flights through here yet.</div>' : ''}
+  </div>`;
+  const routes = dedupeRoutes(mine.concat(friends)).map((r) => ({ a: r.a, b: r.b, progress: null, dim: true }));
+  drawRoutes(routes.length ? routes : [{ a: A, b: A }], { sel: code });
+}
+
 let alertsSeg = 'recent';
 function alertsView() {
   layout({ useMap: false, tab: 'alerts' });
@@ -840,7 +981,7 @@ function alertsView() {
 function flightView(id) {
   const f = findD(id);
   if (!f) { location.hash = '#/'; return; }
-  layout({ tabs: false, snapTo: 'half', left: `<a class="round" href="#/" aria-label="Back to flights">${ICON.back}</a>`, right: `<button class="round" data-act="fit" aria-label="Show whole route">${ICON.fit}</button><a class="round" href="#/edit/${esc(f.id)}" aria-label="Edit flight">${ICON.edit}</a>` });
+  layout({ tabs: false, snapTo: 'half', left: `<a class="round" href="${f.friend ? '#/friends' : '#/'}" aria-label="Back">${ICON.back}</a>`, right: `<button class="round" data-act="fit" aria-label="Show whole route">${ICON.fit}</button><a class="round" href="#/edit/${esc(f.id)}" aria-label="Edit flight">${ICON.edit}</a>` });
   const now = Date.now(), st = status(f, now), p = progress(f, now), L = f.live || {};
   const air = st.key === 'air', done = st.key === 'landed' || st.key === 'cancel' || st.key === 'divert';
   const pos = air ? freshPos(f) : null;
@@ -852,7 +993,7 @@ function flightView(id) {
   $('#grab-content').innerHTML = `
     <div class="stack" style="gap:14px;padding-bottom:6px">
       <div class="row"><div class="badge">${esc(codeOf(f))}</div>
-        <div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:700">${esc(titleOf(f))}</div><div class="muted" style="font-size:12px">${esc(f.A.city)} → ${esc(f.B.city)} · ${fmt(f.depS, f.A.tz, 'day')}</div></div>
+        <div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:700">${f.friend ? esc(f.friend) + ' · ' : ''}${esc(titleOf(f))}</div><div class="muted" style="font-size:12px">${esc(f.A.city)} → ${esc(f.B.city)} · ${fmt(f.depS, f.A.tz, 'day')}</div></div>
         ${pill(st)}</div>
       <div class="between">
         <div style="display:flex;flex-direction:column;gap:6px">${flap(f.from, 'md')}<div class="num" style="font-size:12px"><span class="muted">Departs</span> ${timeHTML(f.dep, f.depS, f.A.tz)}</div>${yourTime(f.dep, f.A.tz)}</div>
@@ -947,8 +1088,9 @@ function planeCard(f, st) {
 }
 const fmtAny = (ts, code) => (AP[code] ? fmt(ts, AP[code].tz, 'time') : '');
 
-function formView(id, pastMode) {
+function formView(id, pastMode, friendMode) {
   const existing = id ? db.flights.find((x) => x.id === id) : null;
+  const forFriend = !!(friendMode || (existing && existing.friend));
   if (id && !existing) { location.hash = '#/'; return; }
   const today = localDateTime(Date.now(), HOME_TZ).date;
   const shiftDay = (d, n) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
@@ -956,12 +1098,14 @@ function formView(id, pastMode) {
   let mode = pastMode ? 'past' : 'upcoming';
   let manualOpen = !!existing || !hasKey();
   let found = [], picked = null, pendingLive = null, arrTouched = !!existing;
-  layout({ tabs: false, snapTo: 'full', left: `<a class="round" href="${existing ? '#/flight/' + esc(existing.id) : '#/'}" aria-label="Close">${ICON.close}</a>` });
-  $('#grab-content').innerHTML = `<div class="between" style="padding-bottom:8px"><h1>${existing ? 'Edit flight' : 'Add a flight'}</h1>
-    ${existing ? '' : `<div class="modes" role="group" aria-label="Flight type"><button type="button" data-mode="upcoming">Upcoming</button><span class="muted">·</span><button type="button" data-mode="past">Past</button></div>`}</div>`;
+  layout({ tabs: false, snapTo: 'full', left: `<a class="round" href="${existing ? '#/flight/' + esc(existing.id) : (forFriend ? '#/friends' : '#/')}" aria-label="Close">${ICON.close}</a>` });
+  $('#grab-content').innerHTML = `<div class="between" style="padding-bottom:8px"><h1>${existing ? 'Edit flight' : (forFriend ? 'Friend\u2019s flight' : 'Add a flight')}</h1>
+    ${existing || forFriend ? '' : `<div class="modes" role="group" aria-label="Flight type"><button type="button" data-mode="upcoming">Upcoming</button><span class="muted">·</span><button type="button" data-mode="past">Past</button></div>`}</div>`;
   const opts = Object.values(AP).map((a) => `<option value="${a.code}">${esc(a.city)} — ${esc(a.name)}</option>`).join('');
   const v = (k) => esc(f[k] || '');
+  const friendNames = [...new Set(db.flights.filter((x) => x.friend).map((x) => x.friend))];
   $('#content').innerHTML = `<form id="ff" class="stack" novalidate autocomplete="off">
+    ${forFriend ? `<div class="field"><label for="f-friend">Friend's name</label><input id="f-friend" list="friendlist" value="${esc((existing && existing.friend) || '')}" placeholder="e.g. Sara" autocapitalize="words"><datalist id="friendlist">${friendNames.map((n) => `<option value="${esc(n)}">`).join('')}</datalist></div>` : ''}
     <div class="searchbox">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
       <label for="f-no" class="sr">Flight number</label>
@@ -1063,7 +1207,7 @@ function formView(id, pastMode) {
   function paintSave() {
     const btn = q('#f-save');
     const ready = !!(picked || manualPreview());
-    btn.textContent = existing ? 'Save changes' : (mode === 'past' ? 'Add to Passport' : 'Add to My Flights');
+    btn.textContent = existing ? 'Save changes' : (forFriend ? 'Follow this flight' : (mode === 'past' ? 'Add to Passport' : 'Add to My Flights'));
     btn.hidden = !ready && !manualOpen;
     q('#f-mtoggle').innerHTML = manualOpen ? (existing ? '' : 'Hide the details') : `No flight number? <u>Type it in yourself</u>`;
     q('#f-mtoggle').hidden = !!existing;
@@ -1133,6 +1277,8 @@ function formView(id, pastMode) {
       arrGate: q('#f-agate').value.trim(), belt: q('#f-belt').value.trim(), aircraft: q('#f-ac').value.trim(),
       demo: false, created: existing ? existing.created : Date.now()
     };
+    if (forFriend) { rec.friend = (q('#f-friend').value || '').trim(); if (!rec.friend) return err('Add your friend\u2019s name.'); }
+    if (existing && existing.leaveH != null) rec.leaveH = existing.leaveH;
     if (pendingLive) rec.live = pendingLive; else if (existing && existing.live && existing.flightNo === rec.flightNo && existing.depDate === rec.depDate) rec.live = existing.live;
     if (!AP[rec.from]) return err('Pick a known departure airport (3-letter code).');
     if (!AP[rec.to]) return err('Pick a known arrival airport (3-letter code).');
@@ -1144,7 +1290,7 @@ function formView(id, pastMode) {
     if (d.dur > 22 * 3600000) return err('That flight would be over 22 hours. Check the dates.');
     if (existing) Object.assign(existing, rec); else db.flights.push(rec);
     save();
-    toast(existing ? 'Flight updated' : (d.arr < Date.now() ? 'Added to your Passport' : 'Flight added'));
+    toast(existing ? 'Flight updated' : (forFriend ? `Following ${rec.friend}\u2019s flight` : (d.arr < Date.now() ? 'Added to your Passport' : 'Flight added')));
     location.hash = '#/flight/' + rec.id;
   });
   paintModes(); paintChips(); paintAirline(); upd();
@@ -1244,6 +1390,7 @@ const ACT = {
   theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); rerenderSettings(); },
   globe: (el, v) => { db.settings.globe = v; save(); nightBroken = false; nightErrors = 0; restyle(); rerenderSettings(); },
   alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); },
+  friendsFilter: (el, v) => { friendsFilter = v; navDir = null; friendsView(); },
   alertsSeg: (el, v) => { alertsSeg = v; navDir = null; alertsView(); },
   defLeave: (el, v) => { db.settings.leaveH = parseFloat(v); save(); navDir = null; const y = $('#content').scrollTop; alertsView(); $('#content').scrollTop = y; },
   leave: (el, v) => {
@@ -1254,7 +1401,7 @@ const ACT = {
   cal: (el, v) => { const f = findD(v); if (f) sendCalendar([f], `Flight ${prettyNo(f) || f.from + '-' + f.to}`.replace(/\s+/g, ' ')); },
   calAll: () => { const up = flightsD().filter((f) => !f.demo && f.dep > Date.now()); if (up.length) sendCalendar(up, 'Samflyer flights'); },
   clearAlerts: () => { db.alerts = []; save(); navDir = null; alertsView(); updateAlertDot(); },
-  fit: () => { userMoved = false; if (lastRoutes) drawRoutes(lastRoutes.routes, { force: true }); },
+  fit: () => { userMoved = false; if (lastRoutes) drawRoutes(lastRoutes.routes, Object.assign({}, lastRoutes.opts, { fit: true, force: true })); },
   refresh: async (el, v) => {
     el.disabled = true; el.textContent = 'Checking…';
     try { const ch = await refreshFlight(v); toast(ch.length ? ch.join(' · ') : 'Up to date'); }
@@ -1295,7 +1442,7 @@ const ACT = {
   del: (el, v) => {
     if (delArmed !== v) { delArmed = v; el.classList.add('armed'); el.textContent = 'Tap again to delete'; setTimeout(() => { if (delArmed === v) { delArmed = null; el.classList.remove('armed'); el.textContent = 'Delete flight'; } }, 3500); return; }
     delArmed = null;
-    db.flights = db.flights.filter((f) => f.id !== v); save(); toast('Flight deleted'); location.hash = '#/';
+    const wasFriend = (db.flights.find((f) => f.id === v) || {}).friend; db.flights = db.flights.filter((f) => f.id !== v); save(); toast('Flight deleted'); location.hash = wasFriend ? '#/friends' : '#/';
   }
 };
 document.addEventListener('click', (e) => {
@@ -1344,7 +1491,8 @@ function addDemo() {
 }
 
 /* ---------- Router + ticker ---------- */
-const TAB_ORDER = { home: 0, alerts: 1, passport: 2, settings: 3 };
+const TAB_ORDER = { home: 0, friends: 1, alerts: 2, passport: 3, settings: 4 };
+let prevHash = '', curHash = '';
 function route() {
   const parts = (location.hash.slice(1) || '/').split('/');
   const a = parts[1] || '', b = parts[2] || '';
@@ -1359,6 +1507,7 @@ function route() {
     else navDir = 'fade';
   }
   prevScreen = screen;
+  if (location.hash !== curHash) { prevHash = curHash; curHash = location.hash; }
   try {
     if (a === 'flight') flightView(decodeURIComponent(b));
     else if (a === 'add') formView(null, b === 'past');
@@ -1366,6 +1515,8 @@ function route() {
     else if (a === 'passport') passportView();
     else if (a === 'settings') settingsView();
     else if (a === 'alerts') alertsView();
+    else if (a === 'friends') { if (b === 'add') formView(null, false, true); else friendsView(); }
+    else if (a === 'airport') airportView(decodeURIComponent(b).toUpperCase());
     else home();
     applyEnter(navDir);
   } catch (err) {
@@ -1377,11 +1528,18 @@ let refreshing = false;
 async function autoRefreshTick() {
   if (refreshing || !hasKey() || !db.settings.autoRefresh || unitsUsed() >= AUTO_STOP_AT || navigator.onLine === false || document.hidden) return;
   const now = Date.now();
-  const due = flightsD().filter((f) => f.flightNo && !f.demo && now >= f.dep - 6 * 3600000 && now <= f.arr + 90 * 60000).find((f) => {
+  let due = flightsD().filter((f) => f.flightNo && !f.demo && now >= f.dep - 6 * 3600000 && now <= f.arr + 90 * 60000).find((f) => {
     const st = status(f, now);
     if (st.key === 'cancel' || st.key === 'divert') return false;
     const every = (st.key === 'air' || f.dep - now < 3 * 3600000) ? 15 * 60000 : 30 * 60000;
     return !(f.live && f.live.fetchedAt) || now - f.live.fetchedAt >= every;
+  });
+  // Friends: hourly from 6h before, every 30 min in the air, one last look after landing.
+  if (!due) due = friendsD().filter((f) => f.flightNo && now >= f.dep - 6 * 3600000 && now <= f.arr + 3 * 3600000).find((f) => {
+    const st = status(f, now), last = (f.live && f.live.fetchedAt) || 0;
+    if (st.key === 'cancel' || st.key === 'divert') return false;
+    if (now >= f.arr + 20 * 60000) return last < f.arr + 15 * 60000 && !/arrived|landed/i.test((f.live && f.live.status) || '');
+    return !last || now - last >= (st.key === 'air' ? 30 : 60) * 60000;
   });
   if (!due) return;
   refreshing = true;
@@ -1400,6 +1558,7 @@ function tick() {
     const t = +el.dataset.cd;
     if (t <= now) rerender = true; else updateFlap(el, cd(t - now));
   });
+  $$('[data-clock]').forEach((el) => { el.textContent = fmt(now, el.dataset.clock, 'time'); });
   $$('[data-prog]').forEach((el) => { const [s, e] = el.dataset.prog.split(',').map(Number); el.style.width = (Math.min(1, Math.max(0, (now - s) / (e - s))) * 100).toFixed(1) + '%'; });
   $$('[data-progdot]').forEach((el) => { const [s, e] = el.dataset.progdot.split(',').map(Number); el.style.left = (Math.min(1, Math.max(0, (now - s) / (e - s))) * 100).toFixed(1) + '%'; });
   if (rerender && !$('#ff')) { route(); return; }
