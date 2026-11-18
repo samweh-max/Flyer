@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.12';
+const VERSION = '1.13';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1057,6 +1057,17 @@ function airportView(code) {
       <div class="stat"><span class="lbl">vs you</span><span class="big">${diff}</span></div>
       <div class="stat"><span class="lbl">Your visits</span><span class="big">${mine.length} <span class="muted" style="font-size:12px">flight${mine.length === 1 ? '' : 's'}</span></span></div>
     </div>
+    ${mine.length ? (() => {
+      const done = mine.filter((f) => f.arr <= now).sort((p, q) => p.dep - q.dep);
+      const rt = new Map(); mine.forEach((f) => { const k = f.from === code ? f.to : f.from; rt.set(k, (rt.get(k) || 0) + 1); });
+      const fav = topOf(rt), far = [...mine].sort((p, q) => q.mi - p.mi)[0];
+      const items = [];
+      if (done.length) items.push(['First visit', `${fmt(done[0].dep, done[0].A.tz, 'mon')} ${fmt(done[0].dep, done[0].A.tz, 'year')}`, `${done[0].from} → ${done[0].to}`]);
+      if (fav) items.push(['Most flown with', `${code} ↔ ${fav[0]}`, `${fav[1]} flight${fav[1] === 1 ? '' : 's'} · ${AP[fav[0]] ? AP[fav[0]].city : ''}`]);
+      if (far) items.push(['Longest from here', `${far.from} → ${far.to}`, `${durStr(far.dur)} · ${nf.format(far.mi * 1.609344)} km`]);
+      const yrs = new Set(done.map(yearOf)); if (yrs.size > 1) items.push(['Years visited', `${yrs.size}`, [...yrs].sort().join(' · ')]);
+      return items.length ? `<div class="facts">${items.map(([l, v, s]) => `<div class="fact"><span class="lbl">${esc(l)}</span><span class="fv">${esc(v)}</span><span class="muted" style="font-size:11px;line-height:1.35">${esc(s)}</span></div>`).join('')}</div>` : '';
+    })() : ''}
     ${up.length ? `<div><div class="lbl" style="margin-bottom:2px">Coming up</div>${up.map(row).join('')}</div>` : ''}
     ${before.length ? `<div><div class="lbl" style="margin-bottom:2px">Before</div>${before.map(row).join('')}</div>` : ''}
     ${!up.length && !before.length ? '<div class="note">No flights through here yet.</div>' : ''}
@@ -1474,17 +1485,81 @@ function aircraftAllView() {
   </div>`;
   fillPhotos($('#content'));
 }
-function passportView() {
-  layout({ tab: 'passport', snapTo: 'half', right: `<button class="round" data-act="fit" aria-label="Re-centre the globe">${ICON.fit}</button>` });
+/* ---------- Fun facts ---------- */
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function topOf(map) { let best = null; map.forEach((v, k) => { if (!best || v > best[1]) best = [k, v]; }); return best; }
+function funFacts(sel, past, period) {
+  if (!sel.length) return [];
+  const F = [], local = (f) => partsAt(f.dep, f.A.tz);
+  const mins = (f) => { const p = local(f); return p.h * 60 + p.mi; };
+  const dateStr = (f) => `${fmt(f.dep, f.A.tz, 'short')} ${fmt(f.dep, f.A.tz, 'year')}`;
+  if (period === 'all') {
+    const by = new Map(); past.forEach((f) => by.set(yearOf(f), (by.get(yearOf(f)) || 0) + 1));
+    const b = topOf(by); if (b) F.push(['Busiest year', String(b[0]), `${b[1]} flights`]);
+  } else {
+    const by = new Map(); sel.forEach((f) => { const m = local(f).m; by.set(m, (by.get(m) || 0) + 1); });
+    const b = topOf(by); if (b) F.push(['Busiest month', MONTHS[b[0] - 1], `${b[1]} flight${b[1] === 1 ? '' : 's'}`]);
+  }
+  const byLen = [...sel].sort((p, q) => q.dur - p.dur);
+  F.push(['Longest flight', `${byLen[0].from} → ${byLen[0].to}`, `${durStr(byLen[0].dur)} · ${nf.format(byLen[0].mi * 1.609344)} km`]);
+  if (sel.length > 1) { const s = byLen[byLen.length - 1]; F.push(['Shortest hop', `${s.from} → ${s.to}`, `${durStr(s.dur)} · ${nf.format(s.mi * 1.609344)} km`]); }
+  const early = [...sel].sort((p, q) => ((mins(p) + 1440 - 240) % 1440) - ((mins(q) + 1440 - 240) % 1440))[0];
+  F.push(['Earliest take-off', fmt(early.dep, early.A.tz, 'time'), `${early.from} → ${early.to} · ${dateStr(early)}`]);
+  const reds = sel.filter((f) => { const m = mins(f); return m >= 22 * 60 || m < 6 * 60; }).length;
+  if (reds) F.push(['Night flights', `${reds}`, `took off between 10pm and 6am`]);
+  const apCount = new Map(); past.forEach((f) => [f.from, f.to].forEach((c) => apCount.set(c, (apCount.get(c) || 0) + 1)));
+  const localCount = new Map([...apCount].filter(([c]) => AP[c] && AP[c].tz === HOME_TZ));
+  const homeC = (topOf(localCount.size ? localCount : apCount) || [])[0], home = AP[homeC];
+  if (home) {
+    let far = null; new Set(sel.flatMap((f) => [f.from, f.to])).forEach((c) => { const d = gcMiles(home, AP[c]); if (!far || d > far[1]) far = [c, d]; });
+    if (far && far[1] > 0) F.push(['Furthest from ' + (home.city === 'London' ? 'London' : home.city), AP[far[0]].city, `${nf.format(far[1] * 1.609344)} km away (${far[0]})`]);
+  }
+  const days = sel.reduce((s, f) => s + f.dur, 0) / 86400000;
+  F.push(['Time in the air', days >= 1 ? `${days.toFixed(1)} days` : `${Math.round(days * 24)} hours`, 'sitting in a seat, gate to gate']);
+  const miles = sel.reduce((s, f) => s + f.mi, 0), moon = miles / 238855;
+  F.push(moon >= 1 ? ['To the Moon', `${moon.toFixed(2)}×`, 'the distance to the Moon'] : ['To the Moon', `${Math.round(moon * 100)}%`, 'of the way there']);
+  const wd = new Map(); sel.forEach((f) => { const d = new Date(Date.UTC(local(f).y, local(f).m - 1, local(f).d)).getUTCDay(); wd.set(d, (wd.get(d) || 0) + 1); });
+  const w = topOf(wd); if (w && sel.length > 2) F.push(['Favourite day to fly', WEEKDAYS[w[0]], `${w[1]} of your flights`]);
+  const tzh = sel.reduce((s, f) => s + Math.abs(tzOffset(f.dep, f.B.tz) - tzOffset(f.dep, f.A.tz)), 0) / 3600000;
+  if (tzh) F.push(['Clock changes', `${nf.format(tzh)} hours`, 'of time zones crossed']);
+  const dayMap = new Map(); sel.forEach((f) => { const k = `${local(f).y}-${local(f).m}-${local(f).d}`; if (!dayMap.has(k)) dayMap.set(k, []); dayMap.get(k).push(f); });
+  const bigDay = [...dayMap.values()].sort((p, q) => q.length - p.length)[0];
+  if (bigDay && bigDay.length > 1) F.push(['Busiest day', `${bigDay.length} flights`, `${dateStr(bigDay[0])} · ${bigDay.map((f) => f.from).concat(bigDay[bigDay.length - 1].to).join(' → ')}`]);
+  if (period === 'all') { const first = [...sel].sort((p, q) => p.dep - q.dep)[0]; F.push(['First flight', `${fmt(first.dep, first.A.tz, 'mon')} ${fmt(first.dep, first.A.tz, 'year')}`, `${first.from} → ${first.to}`]); }
+  else {
+    const before = new Set(past.filter((f) => yearOf(f) < +period).flatMap((f) => [f.from, f.to]));
+    const fresh = [...new Set(sel.flatMap((f) => [f.from, f.to]))].filter((c) => !before.has(c));
+    if (fresh.length) F.push(['New airports', `${fresh.length}`, fresh.slice(0, 5).join(' · ')]);
+  }
+  return F;
+}
+
+/* Passport. On a period change only the numbers change, with a flip or a count, instead of redrawing the page. */
+function tweenNum(el, to) {
+  const from = parseFloat(el.dataset.n || '0'); el.dataset.n = String(to);
+  const fmtN = (v) => (el.dataset.dec ? v.toFixed(+el.dataset.dec) : nf.format(Math.round(v))) + (el.dataset.suf || '');
+  if (reduceMotion() || from === to) { el.textContent = fmtN(to); return; }
+  const t0 = performance.now(), D = 420;
+  const step = (t) => { const k = Math.min(1, (t - t0) / D), e = 1 - Math.pow(1 - k, 3); el.textContent = fmtN(from + (to - from) * e); if (k < 1 && el.isConnected) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+function passportView(soft) {
   const now = Date.now();
   const past = flightsD().filter((f) => f.arr <= now);
   const years = [...new Set(past.map(yearOf))].sort((a, b) => b - a);
   if (ppPeriod !== 'all' && !years.includes(+ppPeriod)) ppPeriod = 'all';
   const sel = past.filter((f) => ppPeriod === 'all' || yearOf(f) === +ppPeriod);
   const periodLabel = ppPeriod === 'all' ? 'All time' : String(ppPeriod);
-  $('#grab-content').innerHTML = `<div class="between" style="flex-wrap:wrap;padding-bottom:6px"><h1>Passport</h1>
-    <div class="chips" role="group" aria-label="Period">${['all', ...years].map((y) => `<button data-act="period" data-v="${y}" aria-pressed="${String(y) === String(ppPeriod)}">${y === 'all' ? 'All time' : y}</button>`).join('')}</div></div>`;
   const routes = dedupeRoutes(sel);
+  const canSoft = soft && past.length && $('#content .pp');
+  if (!canSoft) {
+    layout({ tab: 'passport', snapTo: 'half', right: `<button class="round" data-act="fit" aria-label="Re-centre the globe">${ICON.fit}</button>` });
+    $('#grab-content').innerHTML = `<div class="between" style="flex-wrap:wrap;padding-bottom:6px"><h1>Passport</h1>
+      <div class="chips" role="group" aria-label="Period">${['all', ...years].map((y) => `<button data-act="period" data-v="${y}" aria-pressed="${String(y) === String(ppPeriod)}">${y === 'all' ? 'All time' : y}</button>`).join('')}</div></div>`;
+  } else {
+    $$('#grab-content [data-act=period]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === String(ppPeriod))));
+  }
   $('#top-right').innerHTML = (past.length ? `<span class="chip-float">${routes.length} route${routes.length === 1 ? '' : 's'} · ${periodLabel}</span>` : '') + `<button class="round" data-act="fit" aria-label="Re-centre the globe">${ICON.fit}</button>`;
   if (!past.length) {
     $('#content').innerHTML = `<div class="card empty" style="margin-top:12px"><div style="font-size:17px;font-weight:800">Your Passport is empty</div><div class="note">Flights you've taken appear here with lifetime miles, hours, airports and countries. Add your older trips to fill it in.</div><a class="btn" href="#/add/past">${ICON.plus}Add a past flight</a>${db.flights.some((f) => f.demo) ? '' : '<button class="btn ghost" data-act="demo">Try it with demo flights</button>'}</div>`;
@@ -1496,27 +1571,46 @@ function passportView() {
   const airports = count((f) => [f.from, f.to]), countries = count((f) => [f.A.cc, f.B.cc]);
   const airlines = count((f) => [f.airline || codeOf(f)]), planes = count((f) => [(planeOf(f) || {}).key]);
   const earth = miles / 24901;
-  const topR = routes.sort((a, b) => b.n - a.n).slice(0, 5);
+  const topR = [...routes].sort((a, b) => b.n - a.n).slice(0, 5);
   const alMap = new Map();
   sel.forEach((f) => { const k = f.airline || codeOf(f); alMap.set(k, (alMap.get(k) || 0) + 1); });
   const topA = [...alMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   const maxA = topA.length ? topA[0][1] : 1;
-  const stat = (l, v) => `<div class="stat"><span class="lbl">${l}</span>${flap(String(v), 'sm')}</div>`;
+  const stat = (k, l, v) => `<div class="stat"><span class="lbl">${l}</span>${flap(String(v), 'sm', `data-k="${k}"`)}</div>`;
   const u = db.settings.units;
   const milesBig = u === 'nm' ? miles * 0.868976 : miles;
-  $('#content').innerHTML = `<div class="stack" style="padding-top:12px">
+  const facts = funFacts(sel, past, ppPeriod);
+  const html = `<div class="stack pp" style="padding-top:12px">
     <div class="card"><span class="lbl">${u === 'nm' ? 'Nautical miles flown' : 'Miles flown'}</span>
-      <div style="overflow-x:auto">${flap(nf.format(milesBig).replace(/,/g, ' '), 'md')}</div>
-      <span class="muted num" style="font-size:12px">${nf.format(miles * 1.609344)} km${u === 'both' ? ` · ${nf.format(miles * 0.868976)} nm` : ''}</span>
-      <div class="bar"><i style="width:${Math.min(100, earth * 100).toFixed(0)}%"></i></div>
-      <span style="font-size:12px;font-weight:600">${earth.toFixed(2)}× around the Earth${earth >= 1 ? ' 🌍' : ''}</span></div>
-    <div class="grid3">${stat('Flights', sel.length)}${stat('Hours', Math.round(hrs))}${stat('Airports', airports)}${stat('Countries', countries)}${stat('Airlines', airlines)}${stat('Planes', planes || '—')}</div>
-    <div class="card"><h2>Top routes</h2>${topR.map((r) => `<div class="between" style="font-size:14px"><span style="font-weight:700">${r.a.code} ↔ ${r.b.code} <span class="muted" style="font-weight:500">${esc(r.a.city)} · ${esc(r.b.city)}</span></span><span class="muted">${r.n}×</span></div>`).join('')}</div>
-    <div class="card"><h2>Top airlines</h2>${topA.map(([n, c]) => `<div style="display:flex;flex-direction:column;gap:4px"><div class="between" style="font-size:14px"><span style="font-weight:700">${esc(n)}</span><span class="muted">${c}</span></div><div class="bar"><i style="width:${(c / maxA * 100).toFixed(0)}%"></i></div></div>`).join('')}</div>
-    ${aircraftSection(sel)}
+      <div style="overflow-x:auto">${flap(nf.format(milesBig).replace(/,/g, ' '), 'md', 'data-k="miles"')}</div>
+      <span class="muted num" style="font-size:12px"><span data-k="km" data-n="${miles * 1.609344}">${nf.format(miles * 1.609344)}</span> km${u === 'both' ? ` · <span data-k="nm" data-n="${miles * 0.868976}">${nf.format(miles * 0.868976)}</span> nm` : ''}</span>
+      <div class="bar"><i data-k="earthbar" data-w="${Math.min(100, earth * 100).toFixed(0)}" style="width:${Math.min(100, earth * 100).toFixed(0)}%"></i></div>
+      <span style="font-size:12px;font-weight:600"><span data-k="earth" data-n="${earth}" data-dec="2" data-suf="×">${earth.toFixed(2)}×</span> around the Earth</span></div>
+    <div class="grid3">${stat('s-fl', 'Flights', sel.length)}${stat('s-hr', 'Hours', Math.round(hrs))}${stat('s-ap', 'Airports', airports)}${stat('s-co', 'Countries', countries)}${stat('s-al', 'Airlines', airlines)}${stat('s-pl', 'Planes', planes || '—')}</div>
+    <div class="stack" style="gap:10px"><span class="lbl">Fun facts</span>
+      <div class="facts" data-k="facts">${facts.map(([l, v, s]) => `<div class="fact"><span class="lbl">${esc(l)}</span><span class="fv">${esc(v)}</span><span class="muted" style="font-size:11px;line-height:1.35">${esc(s)}</span></div>`).join('')}</div></div>
+    <div class="card"><h2>Top routes</h2><div class="stack" style="gap:12px" data-k="routes">${topR.map((r) => `<div class="between" style="font-size:14px"><span style="font-weight:700">${r.a.code} ↔ ${r.b.code} <span class="muted" style="font-weight:500">${esc(r.a.city)} · ${esc(r.b.city)}</span></span><span class="muted">${r.n}×</span></div>`).join('')}</div></div>
+    <div class="card"><h2>Top airlines</h2><div class="stack" style="gap:12px" data-k="airlines">${topA.map(([n, c]) => `<div style="display:flex;flex-direction:column;gap:4px"><div class="between" style="font-size:14px"><span style="font-weight:700">${esc(n)}</span><span class="muted">${c}</span></div><div class="bar"><i style="width:${(c / maxA * 100).toFixed(0)}%"></i></div></div>`).join('')}</div></div>
+    <div data-k="aircraft">${aircraftSection(sel)}</div>
     <a class="btn dash" href="#/add/past">${ICON.plus}Add a past flight</a>
   </div>`;
-  fillPhotos($('#content'));
+  if (canSoft) {
+    const tmp = document.createElement('div'); tmp.innerHTML = html;
+    $$('[data-k]', tmp).forEach((nw) => {
+      const old = $(`#content [data-k="${nw.dataset.k}"]`); if (!old) return;
+      if (old.classList.contains('flap')) updateFlap(old, nw.getAttribute('aria-label') === '—' ? '—' : nw.getAttribute('aria-label').replace(/ /g, ' '));
+      else if (nw.dataset.n != null) tweenNum(old, parseFloat(nw.dataset.n));
+      else if (nw.dataset.w != null) old.style.width = nw.dataset.w + '%';
+      else if (old.innerHTML !== nw.innerHTML) {
+        old.innerHTML = nw.innerHTML;
+        if (!reduceMotion()) { old.classList.remove('swap'); void old.offsetWidth; old.classList.add('swap'); }
+        if (nw.dataset.k === 'aircraft') fillPhotos(old);
+      }
+    });
+  } else {
+    $('#content').innerHTML = html;
+    fillPhotos($('#content'));
+  }
   drawRoutes(routes.map((r) => ({ a: r.a, b: r.b, progress: null })));
 }
 
@@ -1562,7 +1656,7 @@ let delArmed = null;
 function rerenderSettings() { const y = $('#content').scrollTop; navDir = null; settingsView(); $('#content').scrollTop = y; }
 const ACT = {
   homeTab: (el, v) => { if (homeTab === v) return; homeTab = v; navDir = null; home(); applyEnter(v === 'past' ? 'sl' : 'sr', true); },
-  period: (el, v) => { ppPeriod = v === 'all' ? 'all' : +v; navDir = null; passportView(); applyEnter('fade', true); },
+  period: (el, v) => { ppPeriod = v === 'all' ? 'all' : +v; navDir = null; passportView(true); },
   units: (el, v) => { db.settings.units = v; save(); rerenderSettings(); },
   theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); rerenderSettings(); },
   globe: (el, v) => { db.settings.globe = v; save(); nightBroken = false; nightErrors = 0; restyle(); rerenderSettings(); },

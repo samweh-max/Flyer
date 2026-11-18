@@ -147,6 +147,16 @@ details summary{cursor:pointer;font-weight:700;font-size:14px;min-height:44px;di
 [hidden]{display:none!important}
 
 
+
+/* ---- Fun facts + soft updates ---- */
+.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.fact{background:var(--card);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:3px;min-width:0}
+body.no-map .fact{background:var(--card-solid)}
+.fact .fv{font-size:19px;font-weight:800;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.swap{animation:swapIn .32s cubic-bezier(.2,.8,.2,1)}
+@keyframes swapIn{from{opacity:.25;transform:translateY(4px)}to{opacity:1;transform:none}}
+.pp .bar i{transition:width .42s cubic-bezier(.2,.8,.2,1)}
+@media (prefers-reduced-motion: reduce){.swap{animation:none}.pp .bar i{transition:none}}
 /* ---- Aircraft ---- */
 .pcards{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -20px;padding:0 20px 4px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .pcards::-webkit-scrollbar{display:none}
