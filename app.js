@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.2';
+const VERSION = '1.4';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -385,7 +385,7 @@ function initMap() {
   if (map) return;
   if (!window.maplibregl) { $('#map-fallback').style.display = 'block'; return; }
   try {
-    map = new maplibregl.Map({ container: 'map', style: buildStyle(), center: [15, 42], zoom: 1.6, minZoom: 1, maxZoom: 9, attributionControl: false, pitchWithRotate: false, dragRotate: false, fadeDuration: 150 });
+    map = new maplibregl.Map({ container: 'map', style: buildStyle(), center: [10, 45], zoom: 1.1, minZoom: 0, maxZoom: 9, attributionControl: false, pitchWithRotate: false, dragRotate: false, fadeDuration: 150 });
   } catch (e) { map = null; $('#map-fallback').textContent = "This phone can't draw the 3D map"; $('#map-fallback').style.display = 'block'; return; }
   styleKey = globeMode() + currentTheme();
   map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© OpenStreetMap · OpenFreeMap · NASA GIBS' }), 'top-right');
@@ -454,30 +454,46 @@ function drawRoutes(routes, opts = {}) {
 function fitTo(bounds) {
   if (!map || !mapReady) return;
   if (snap === 'full' && !document.body.classList.contains('no-map')) return;
-  const H = window.innerHeight, W = window.innerWidth;
-  const top = 76, bottom = Math.max(24, Math.min(visibleSheet() + 16, H - top - 160));
+  const H = appH(), W = appEl.offsetWidth || window.innerWidth;
+  const top = 64, bottom = Math.max(24, Math.min(visibleSheet() + 12, H - top - 160));
   const duration = reduceMotion() ? 0 : 900;
   map.resize();
-  if (!bounds.length) { map.easeTo({ center: [15, 42], zoom: 1.6, padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
+  const globeZoom = () => { const D = Math.max(160, Math.min(W - 40, H - top - bottom - 24)); return Math.log2(D * Math.PI / 512); };
+  if (!bounds.length) { map.easeTo({ center: [10, 45], zoom: globeZoom(), padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
   let minLat = 90, maxLat = -90, minLon = 1e9, maxLon = -1e9;
   bounds.forEach(([la, lo]) => { minLat = Math.min(minLat, la); maxLat = Math.max(maxLat, la); minLon = Math.min(minLon, lo); maxLon = Math.max(maxLon, lo); });
-  if (maxLon - minLon > 300) { map.easeTo({ center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2], zoom: 1.2, duration }); return; }
+  if (maxLon - minLon > 150) { map.easeTo({ center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2], zoom: globeZoom(), padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
   const side = Math.min(48, W / 6);
   map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: { top, bottom, left: side, right: side }, maxZoom: 5.5, duration, essential: true });
 }
+
+/* ---------- Screen size (iPhone home-screen apps report a short height) ---------- */
+const appEl = $('#app');
+function setAppHeight() {
+  let h = window.innerHeight;
+  if (navigator.standalone === true) {
+    const portrait = window.matchMedia('(orientation: portrait)').matches;
+    const sh = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width);
+    if (sh > h) h = sh;
+  }
+  document.documentElement.style.setProperty('--app-h', h + 'px');
+}
+setAppHeight();
+const appH = () => appEl.offsetHeight || window.innerHeight;
 
 /* ---------- Sheet ---------- */
 const sheet = $('#sheet'), grab = $('#grab');
 let snap = 'half', snaps = { full: 0, half: 0, peek: 0 };
 function computeSnaps() {
-  const H = sheet.offsetHeight, vh = window.innerHeight;
-  snaps = { full: 0, half: Math.max(0, H - Math.round(vh * 0.56)), peek: Math.max(0, H - 190) };
+  const H = sheet.offsetHeight, vh = appH();
+  snaps = { full: 0, half: Math.max(0, H - Math.round(vh * 0.52)), peek: Math.max(0, H - 190) };
 }
 function setSnap(s, anim = true) {
   snap = s;
   computeSnaps();
   sheet.classList.toggle('anim', anim);
   sheet.style.transform = `translateY(${snaps[s]}px)`;
+  sheet.style.setProperty('--off', snaps[s] + 'px');
 }
 function visibleSheet() {
   if (document.body.classList.contains('no-map')) return 0;
@@ -509,7 +525,9 @@ function endDrag(cancel) {
 }
 grab.addEventListener('pointerup', () => endDrag(false));
 grab.addEventListener('pointercancel', () => endDrag(true));
-window.addEventListener('resize', () => { if (!document.body.classList.contains('no-map')) setSnap(snap, false); moveTabPill(pillTab); });
+function onResize() { setAppHeight(); if (!document.body.classList.contains('no-map')) setSnap(snap, false); moveTabPill(pillTab); if (map) { map.resize(); if (lastRoutes) drawRoutes(lastRoutes.routes); } }
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', () => setTimeout(onResize, 250));
 
 /* ---------- Layout + toast ---------- */
 const ICON = {
@@ -563,7 +581,7 @@ function applyEnter(dir, contentOnly) {
 let toastTimer = null;
 function toast(msg) {
   let t = $('.toast');
-  if (!t) { t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); }
+  if (!t) { t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); appEl.appendChild(t); }
   t.textContent = msg;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.remove(), 2600);
@@ -771,91 +789,159 @@ const fmtAny = (ts, code) => (AP[code] ? fmt(ts, AP[code].tz, 'time') : '');
 function formView(id, pastMode) {
   const existing = id ? db.flights.find((x) => x.id === id) : null;
   if (id && !existing) { location.hash = '#/'; return; }
-  const f = existing || { flightNo: '', airline: '', from: '', to: '', depDate: pastMode ? '' : localDateTime(Date.now(), HOME_TZ).date, depTime: '', arrDate: '', arrTime: '' };
-  layout({ tabs: false, snapTo: 'full', left: `<a class="round" href="${existing ? '#/flight/' + esc(existing.id) : '#/'}" aria-label="Close">${ICON.close}</a>` });
+  const today = localDateTime(Date.now(), HOME_TZ).date;
+  const shiftDay = (d, n) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+  const f = existing || { flightNo: '', airline: '', from: '', to: '', depDate: today, depTime: '', arrDate: '', arrTime: '' };
   let mode = pastMode ? 'past' : 'upcoming';
-  $('#grab-content').innerHTML = `<div class="between" style="padding-bottom:8px"><h1>${existing ? 'Edit flight' : 'Add flight'}</h1></div>`;
+  let manualOpen = !!existing || !hasKey();
+  let found = [], picked = null, pendingLive = null, arrTouched = !!existing;
+  layout({ tabs: false, snapTo: 'full', left: `<a class="round" href="${existing ? '#/flight/' + esc(existing.id) : '#/'}" aria-label="Close">${ICON.close}</a>` });
+  $('#grab-content').innerHTML = `<div class="between" style="padding-bottom:8px"><h1>${existing ? 'Edit flight' : 'Add a flight'}</h1>
+    ${existing ? '' : `<div class="modes" role="group" aria-label="Flight type"><button type="button" data-mode="upcoming">Upcoming</button><span class="muted">·</span><button type="button" data-mode="past">Past</button></div>`}</div>`;
   const opts = Object.values(AP).map((a) => `<option value="${a.code}">${esc(a.city)} — ${esc(a.name)}</option>`).join('');
   const v = (k) => esc(f[k] || '');
   $('#content').innerHTML = `<form id="ff" class="stack" novalidate autocomplete="off">
-    ${existing ? '' : `<div class="seg" role="group" aria-label="Flight type"><button type="button" data-mode="upcoming" aria-pressed="${mode === 'upcoming'}">Upcoming</button><button type="button" data-mode="past" aria-pressed="${mode === 'past'}">Past flight</button></div>`}
-    <div class="grid2">
-      <div class="field"><label for="f-no">Flight number</label><input id="f-no" class="code" value="${v('flightNo')}" placeholder="PC1172" inputmode="text" autocapitalize="characters"></div>
-      <div class="field"><label for="f-al">Airline</label><input id="f-al" value="${v('airline')}" placeholder="Auto from number"></div>
+    <div class="searchbox">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <label for="f-no" class="sr">Flight number</label>
+      <input id="f-no" value="${v('flightNo')}" placeholder="Flight no. e.g. PC1172" autocapitalize="characters" spellcheck="false" enterkeyhint="search">
+      <span id="f-alname" class="muted" style="font-size:12px;font-weight:700;white-space:nowrap"></span>
     </div>
-    ${hasKey() ? `<div class="stack" style="gap:8px"><button type="button" class="btn ghost" id="f-look">Look up flight number + date <span class="muted" style="font-weight:500">· 1 lookup</span></button><div id="f-found"></div></div>` : ''}
-    <div class="grid2">
-      <div class="field"><label for="f-from">From</label><input id="f-from" class="code" list="aplist" value="${v('from')}" placeholder="LHR" maxlength="3" autocapitalize="characters"><span class="hint" id="h-from">&nbsp;</span></div>
-      <div class="field"><label for="f-to">To</label><input id="f-to" class="code" list="aplist" value="${v('to')}" placeholder="IST" maxlength="3" autocapitalize="characters"><span class="hint" id="h-to">&nbsp;</span></div>
-    </div>
-    <datalist id="aplist">${opts}</datalist>
-    <div class="grid2">
-      <div class="field"><label for="f-dd">Departure date</label><input id="f-dd" type="date" value="${v('depDate')}"></div>
-      <div class="field"><label for="f-dt">Departs (local)</label><input id="f-dt" type="time" value="${v('depTime')}"></div>
-    </div>
-    <div class="grid2">
-      <div class="field"><label for="f-ad">Arrival date</label><input id="f-ad" type="date" value="${v('arrDate')}"><span class="hint">Fills itself in</span></div>
-      <div class="field"><label for="f-at">Arrives (local)</label><input id="f-at" type="time" value="${v('arrTime')}"></div>
-    </div>
-    <div class="note" id="f-sum">&nbsp;</div>
-    <details ${existing && (existing.depGate || existing.seat || existing.depTerm || existing.arrGate || existing.belt || existing.aircraft) ? 'open' : ''}><summary>More details (gate, seat, belt…)</summary>
-      <div class="grid3" style="margin-top:8px">
-        <div class="field"><label for="f-term">Terminal</label><input id="f-term" value="${v('depTerm')}"></div>
-        <div class="field"><label for="f-gate">Gate</label><input id="f-gate" value="${v('depGate')}"></div>
-        <div class="field"><label for="f-seat">Seat</label><input id="f-seat" value="${v('seat')}"></div>
-        <div class="field"><label for="f-agate">Arr gate</label><input id="f-agate" value="${v('arrGate')}"></div>
-        <div class="field"><label for="f-belt">Bag belt</label><input id="f-belt" value="${v('belt')}"></div>
-        <div class="field"><label for="f-ac">Aircraft</label><input id="f-ac" value="${v('aircraft')}" placeholder="A320"></div>
-      </div></details>
+    <div class="chips datechips" id="f-chips" role="group" aria-label="Departure date"></div>
+    ${hasKey() ? `<button type="button" class="btn ghost" id="f-look">Find flight <span class="muted" style="font-weight:500">· 1 lookup</span></button>` : (existing ? '' : `<div class="note">Searching needs live data — <a href="#/settings">turn it on in Settings</a>. For now, type the details in below.</div>`)}
+    <div id="f-result" class="stack" style="gap:10px"></div>
     <div class="hint err" id="f-err" role="alert" style="font-size:13px;color:var(--red)"></div>
-    <button class="btn" type="submit" id="f-save">${existing ? 'Save changes' : (mode === 'past' ? 'Add to Passport' : 'Add to My Flights')}</button>
-    <div class="note" style="text-align:center">${hasKey() ? 'Type the flight number and date, then Look up — or fill everything in yourself.' : 'Copy the times from your booking, or turn on live data in Settings to look flights up by number.'}</div>
+    <button class="btn" type="submit" id="f-save"></button>
+    <button type="button" class="linkbtn" id="f-mtoggle"></button>
+    <div id="f-manual" class="stack" ${manualOpen ? '' : 'hidden'}>
+      <div class="field"><label for="f-al">Airline</label><input id="f-al" value="${v('airline')}" placeholder="Fills in from the number"></div>
+      <div class="grid2">
+        <div class="field"><label for="f-from">From</label><input id="f-from" class="code" list="aplist" value="${v('from')}" placeholder="LHR" maxlength="3" autocapitalize="characters"><span class="hint" id="h-from">&nbsp;</span></div>
+        <div class="field"><label for="f-to">To</label><input id="f-to" class="code" list="aplist" value="${v('to')}" placeholder="IST" maxlength="3" autocapitalize="characters"><span class="hint" id="h-to">&nbsp;</span></div>
+      </div>
+      <datalist id="aplist">${opts}</datalist>
+      <div class="grid2">
+        <div class="field"><label for="f-dt">Departs (local)</label><input id="f-dt" type="time" value="${v('depTime')}"></div>
+        <div class="field"><label for="f-at">Arrives (local)</label><input id="f-at" type="time" value="${v('arrTime')}"></div>
+      </div>
+      <div class="field"><label for="f-ad">Arrival date</label><input id="f-ad" type="date" value="${v('arrDate')}"><span class="hint">Fills itself in, including overnight flights</span></div>
+      <details ${existing && (existing.depGate || existing.seat || existing.depTerm || existing.arrGate || existing.belt || existing.aircraft) ? 'open' : ''}><summary>Gate, seat, belt…</summary>
+        <div class="grid3" style="margin-top:8px">
+          <div class="field"><label for="f-term">Terminal</label><input id="f-term" value="${v('depTerm')}"></div>
+          <div class="field"><label for="f-gate">Gate</label><input id="f-gate" value="${v('depGate')}"></div>
+          <div class="field"><label for="f-seat">Seat</label><input id="f-seat" value="${v('seat')}"></div>
+          <div class="field"><label for="f-agate">Arr gate</label><input id="f-agate" value="${v('arrGate')}"></div>
+          <div class="field"><label for="f-belt">Bag belt</label><input id="f-belt" value="${v('belt')}"></div>
+          <div class="field"><label for="f-ac">Aircraft</label><input id="f-ac" value="${v('aircraft')}" placeholder="A320"></div>
+        </div></details>
+    </div>
+    <input type="hidden" id="f-dd" value="${v('depDate')}">
   </form>`;
   const form = $('#ff'), q = (s) => $(s, form);
-  let arrTouched = !!existing, pendingLive = null;
-  const look = q('#f-look');
-  if (look) look.addEventListener('click', async () => {
-    const no = q('#f-no').value.trim().toUpperCase(), date = q('#f-dd').value, box = q('#f-found');
-    if (!no || !date) { box.innerHTML = '<div class="note" style="color:var(--red)">Type the flight number and departure date first.</div>'; return; }
-    look.disabled = true; box.innerHTML = '<div class="note">Looking up…</div>';
-    try {
-      const list = await adb(`/flights/number/${encodeURIComponent(no)}/${date}?withAircraftImage=false&withLocation=false&dateLocalRole=Departure`);
-      const found = (Array.isArray(list) ? list : [list]).map(fromAdb).filter((m) => m.from && m.to && m.depS && m.arrS);
-      if (!found.length) { box.innerHTML = `<div class="note">No flight ${esc(no)} found on that date. Check the number and date, or fill it in yourself.</div>`; return; }
-      box.innerHTML = `<div class="note" style="color:var(--green);font-weight:700">✓ Found ${found.length === 1 ? '1 flight' : found.length + ' legs — pick yours'}</div>` + found.map((m, i) => `<button type="button" class="list-row" data-pick="${i}" style="width:100%;border:none;text-align:left"><div style="flex:1"><div style="font-size:15px;font-weight:800">${m.from} → ${m.to}</div><div class="muted" style="font-size:12px">${esc(AP[m.from].city)} ${fmt(m.depS, AP[m.from].tz, 'time')} → ${esc(AP[m.to].city)} ${fmt(m.arrS, AP[m.to].tz, 'time')} · ${esc(m.live.status)}</div></div><span class="pill blue">Use</span></button>`).join('');
-      $$('[data-pick]', box).forEach((b) => b.addEventListener('click', () => {
-        const m = found[+b.dataset.pick];
-        const dl = localDateTime(m.depS, AP[m.from].tz), al = localDateTime(m.arrS, AP[m.to].tz);
-        q('#f-from').value = m.from; q('#f-to').value = m.to;
-        q('#f-dd').value = dl.date; q('#f-dt').value = dl.time; q('#f-ad').value = al.date; q('#f-at').value = al.time;
-        if (m.airline) { q('#f-al').value = m.airline; q('#f-al').dataset.auto = '0'; }
-        if (m.live.depTerm) q('#f-term').value = m.live.depTerm;
-        if (m.live.depGate) q('#f-gate').value = m.live.depGate;
-        if (m.live.arrGate) q('#f-agate').value = m.live.arrGate;
-        if (m.live.belt) q('#f-belt').value = m.live.belt;
-        if (m.live.model) q('#f-ac').value = m.live.model;
-        arrTouched = true; pendingLive = m.live;
-        box.innerHTML = `<div class="note" style="color:var(--green);font-weight:700">✓ Filled in ${m.from} → ${m.to}. Check it over, then save.</div>`;
-        upd();
-      }));
-    } catch (e) { box.innerHTML = `<div class="note" style="color:var(--red)">${esc(errText(e))}</div>`; }
-    finally { look.disabled = false; }
-  });
-  q('#f-ad').addEventListener('input', () => { arrTouched = true; });
-  $$('[data-mode]', form).forEach((b) => b.addEventListener('click', () => {
-    mode = b.dataset.mode;
-    $$('[data-mode]', form).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-    q('#f-save').textContent = mode === 'past' ? 'Add to Passport' : 'Add to My Flights';
+  const dd = () => q('#f-dd').value;
+  /* ----- mode + date chips ----- */
+  function paintModes() { $$('#grab-content [data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode))); }
+  function paintChips() {
+    const d = dd();
+    const presets = mode === 'past' ? [[today, 'Today'], [shiftDay(today, -1), 'Yesterday']] : [[today, 'Today'], [shiftDay(today, 1), 'Tomorrow']];
+    const isPreset = presets.some(([pd]) => pd === d);
+    const other = d && !isPreset ? new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(d + 'T12:00:00Z')) : 'Other date…';
+    q('#f-chips').innerHTML = presets.map(([pd, l]) => `<button type="button" data-day="${pd}" aria-pressed="${pd === d}">${l}</button>`).join('') +
+      `<label class="datechip" aria-pressed="${!!d && !isPreset}">${esc(other)}<input type="date" id="f-pick" value="${d}" aria-label="Pick a date"></label>`;
+    $$('[data-day]', form).forEach((b) => b.addEventListener('click', () => setDate(b.dataset.day)));
+    q('#f-pick').addEventListener('change', (e) => { if (e.target.value) setDate(e.target.value); });
+  }
+  function setDate(d) { q('#f-dd').value = d; if (!existing) arrTouched = false; found = []; picked = null; paintChips(); renderResult(); upd(); }
+  $$('#grab-content [data-mode]').forEach((b) => b.addEventListener('click', () => {
+    mode = b.dataset.mode; paintModes();
+    if (mode === 'past' && dd() > today) setDate(today); else paintChips();
+    paintSave();
   }));
-  q('#f-no').addEventListener('input', (e) => {
-    const val = e.target.value.toUpperCase().replace(/\s+/g, '');
-    e.target.value = val;
-    const name = AIRLINES[val.slice(0, 2)];
+  /* ----- airline from number ----- */
+  function paintAirline() {
+    const no = q('#f-no').value, name = AIRLINES[no.slice(0, 2)];
+    q('#f-alname').textContent = (picked && picked.airline) || name || '';
     const al = q('#f-al');
     if (name && (!al.value || al.dataset.auto === '1')) { al.value = name; al.dataset.auto = '1'; }
-  });
+  }
+  q('#f-no').addEventListener('input', (e) => { e.target.value = e.target.value.toUpperCase().replace(/\s+/g, ''); paintAirline(); });
   q('#f-al').addEventListener('input', (e) => { e.target.dataset.auto = '0'; });
-  function upd() {
+  q('#f-no').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (q('#f-look')) q('#f-look').click(); } });
+  /* ----- result card ----- */
+  function cardHTML(m, i, sel) {
+    const A = AP[m.from], B = AP[m.to];
+    const st = m.status ? `<span class="pill ${m.status === 'Canceled' ? 'red' : 'grey'}">${esc(m.status === 'Expected' || m.status === 'Unknown' ? 'Scheduled' : m.status.replace(/([a-z])([A-Z])/g, '$1 $2'))}</span>` : '';
+    const days = Math.round((Date.parse(localDateTime(m.arrS, B.tz).date) - Date.parse(localDateTime(m.depS, A.tz).date)) / 86400000);
+    return `<div class="card resultcard${sel ? ' sel' : ''}" ${i != null ? `data-pick="${i}" role="button" tabindex="0" aria-pressed="${sel}"` : ''}>
+      <div class="between"><span style="font-size:12px;font-weight:800;color:var(--green)">${i == null ? 'Your flight' : (found.length > 1 ? (sel ? '✓ This one' : 'Tap to choose') : '✓ Found your flight')}</span>${st}</div>
+      <div class="between">
+        <div style="display:flex;flex-direction:column;gap:6px;min-width:0">${flap(m.from, 'md')}<span class="muted" style="font-size:12px">${esc(A.city)} ${esc(A.name !== A.city ? A.name : '')}</span><span style="font-size:18px;font-weight:800" class="num">${fmt(m.depS, A.tz, 'time')}</span></div>
+        <div class="muted num" style="display:flex;flex-direction:column;align-items:center;font-size:11px;gap:2px;text-align:center"><span>${durStr(m.arrS - m.depS)}</span><span>${nf.format(gcMiles(A, B))} mi</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;text-align:right;min-width:0">${flap(m.to, 'md')}<span class="muted" style="font-size:12px">${esc(B.city)} ${esc(B.name !== B.city ? B.name : '')}</span><span style="font-size:18px;font-weight:800" class="num">${fmt(m.arrS, B.tz, 'time')}${days > 0 ? ` <span class="muted" style="font-size:12px">+${days}</span>` : ''}</span></div>
+      </div>
+      ${m.airline || m.flightNo ? `<span class="muted" style="font-size:12px">${esc([m.airline, (m.flightNo || '').replace(/^([A-Z0-9]{2})(\d)/, '$1 $2'), m.model].filter(Boolean).join(' · '))}</span>` : ''}
+    </div>`;
+  }
+  function manualPreview() {
+    const A = AP[q('#f-from').value], B = AP[q('#f-to').value];
+    if (!A || !B || !dd() || !q('#f-dt').value || !q('#f-ad').value || !q('#f-at').value) return null;
+    const depS = zonedToUtc(dd(), q('#f-dt').value, A.tz), arrS = zonedToUtc(q('#f-ad').value, q('#f-at').value, B.tz);
+    return arrS > depS ? { from: A.code, to: B.code, depS, arrS, airline: q('#f-al').value, flightNo: q('#f-no').value } : null;
+  }
+  function renderResult() {
+    const box = q('#f-result');
+    if (found.length) {
+      box.innerHTML = found.map((m, i) => cardHTML(Object.assign({ model: m.live.model, status: m.live.status }, m), i, found.length === 1 || picked === m)).join('');
+      $$('[data-pick]', box).forEach((c) => { const go = () => { usePick(found[+c.dataset.pick]); }; c.addEventListener('click', go); c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }); });
+    } else {
+      const m = manualPreview();
+      box.innerHTML = m ? cardHTML(m, null, false) : '';
+    }
+    paintSave();
+  }
+  function paintSave() {
+    const btn = q('#f-save');
+    const ready = !!(picked || manualPreview());
+    btn.textContent = existing ? 'Save changes' : (mode === 'past' ? 'Add to Passport' : 'Add to My Flights');
+    btn.hidden = !ready && !manualOpen;
+    q('#f-mtoggle').innerHTML = manualOpen ? (existing ? '' : 'Hide the details') : `No flight number? <u>Type it in yourself</u>`;
+    q('#f-mtoggle').hidden = !!existing;
+  }
+  function usePick(m) {
+    picked = m;
+    const dl = localDateTime(m.depS, AP[m.from].tz), al = localDateTime(m.arrS, AP[m.to].tz);
+    q('#f-from').value = m.from; q('#f-to').value = m.to;
+    q('#f-dd').value = dl.date; q('#f-dt').value = dl.time; q('#f-ad').value = al.date; q('#f-at').value = al.time;
+    if (m.airline) { q('#f-al').value = m.airline; q('#f-al').dataset.auto = '0'; }
+    const L = m.live || {};
+    if (L.depTerm) q('#f-term').value = L.depTerm;
+    if (L.depGate) q('#f-gate').value = L.depGate;
+    if (L.arrGate) q('#f-agate').value = L.arrGate;
+    if (L.belt) q('#f-belt').value = L.belt;
+    if (L.model) q('#f-ac').value = L.model;
+    arrTouched = true; pendingLive = m.live || null;
+    paintAirline(); paintChips(); renderResult(); upd(true);
+  }
+  q('#f-mtoggle').addEventListener('click', () => { manualOpen = !manualOpen; q('#f-manual').hidden = !manualOpen; paintSave(); if (manualOpen) setTimeout(() => q('#f-manual').scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }), 50); });
+  const look = q('#f-look');
+  if (look) look.addEventListener('click', async () => {
+    const no = q('#f-no').value.trim().toUpperCase(), date = dd(), box = q('#f-result');
+    q('#f-err').textContent = '';
+    if (!no) { q('#f-err').textContent = 'Type the flight number first.'; q('#f-no').focus(); return; }
+    if (!date) { q('#f-err').textContent = 'Pick the departure date.'; return; }
+    look.disabled = true; look.innerHTML = 'Finding…'; box.innerHTML = '<div class="card"><div class="note">Looking up ' + esc(no) + '…</div></div>';
+    try {
+      const list = await adb(`/flights/number/${encodeURIComponent(no)}/${date}?withAircraftImage=false&withLocation=false&dateLocalRole=Departure`);
+      found = (Array.isArray(list) ? list : [list]).map(fromAdb).filter((m) => m.from && m.to && m.depS && m.arrS);
+      picked = null;
+      if (!found.length) { box.innerHTML = `<div class="card"><div class="note">No flight ${esc(no)} found on that date. Check the number and the day, or type it in yourself below.</div></div>`; manualOpen = true; q('#f-manual').hidden = false; paintSave(); return; }
+      if (found.length === 1) usePick(found[0]); else renderResult();
+    } catch (e) { box.innerHTML = `<div class="card"><div class="note" style="color:var(--red)">${esc(errText(e))}</div></div>`; }
+    finally { look.disabled = false; look.innerHTML = 'Find flight <span class="muted" style="font-weight:500">· 1 lookup</span>'; }
+  });
+  /* ----- manual fields ----- */
+  q('#f-ad').addEventListener('input', () => { arrTouched = true; });
+  function upd(skipFound) {
     ['from', 'to'].forEach((k) => {
       const el = q('#f-' + k), h = q('#h-' + k);
       el.value = el.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
@@ -863,40 +949,25 @@ function formView(id, pastMode) {
       h.className = 'hint' + (el.value.length === 3 && !a ? ' err' : '');
       h.textContent = a ? `${a.city} · ${a.name}` : (el.value.length === 3 ? 'Not in the airport list yet' : ' ');
     });
-    const A = AP[q('#f-from').value], B = AP[q('#f-to').value];
-    const dd = q('#f-dd').value, dt = q('#f-dt').value, at = q('#f-at').value;
-    if (A && B && dd && dt && at && !arrTouched) {
-      const dep = zonedToUtc(dd, dt, A.tz);
-      let ad = dd;
-      for (let i = 0; i < 3; i++) {
-        if (zonedToUtc(ad, at, B.tz) > dep) break;
-        const d = new Date(ad + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); ad = d.toISOString().slice(0, 10);
-      }
+    const A = AP[q('#f-from').value], B = AP[q('#f-to').value], dt = q('#f-dt').value, at = q('#f-at').value;
+    if (A && B && dd() && dt && at && !arrTouched) {
+      const dep = zonedToUtc(dd(), dt, A.tz);
+      let ad = dd();
+      for (let i = 0; i < 3; i++) { if (zonedToUtc(ad, at, B.tz) > dep) break; ad = shiftDay(ad, 1); }
       q('#f-ad').value = ad;
     }
-    const ad = q('#f-ad').value;
-    if (A && B) {
-      let s = distStr(gcMiles(A, B));
-      if (dd && dt && ad && at) {
-        const dur = zonedToUtc(ad, at, B.tz) - zonedToUtc(dd, dt, A.tz);
-        if (dur > 0) s = `${durStr(dur)} flight · ` + s;
-      }
-      q('#f-sum').textContent = `${A.city} → ${B.city} · ${s}`;
-      drawRoutes([{ a: A, b: B }]);
-    } else q('#f-sum').textContent = ' ';
+    if (A && B) drawRoutes([{ a: A, b: B }], { fit: false });
+    if (!skipFound && !found.length) renderResult(); else paintSave();
   }
-  form.addEventListener('input', (e) => { if (e.target.id !== 'f-no' && e.target.id !== 'f-al') upd(); });
-  upd();
-  if (!A0()) drawRoutes([]);
-  function A0() { return AP[q('#f-from').value] && AP[q('#f-to').value]; }
+  q('#f-manual').addEventListener('input', (e) => { if (e.target.id !== 'f-al') { if (picked) { picked = null; found = []; } upd(); } });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const err = (m) => { q('#f-err').textContent = m; };
+    const err = (m) => { q('#f-err').textContent = m; if (!manualOpen) { manualOpen = true; q('#f-manual').hidden = false; paintSave(); } };
     const rec = {
       id: existing ? existing.id : newId(),
       flightNo: q('#f-no').value.trim().toUpperCase(), airline: q('#f-al').value.trim(),
       from: q('#f-from').value, to: q('#f-to').value,
-      depDate: q('#f-dd').value, depTime: q('#f-dt').value, arrDate: q('#f-ad').value, arrTime: q('#f-at').value,
+      depDate: dd(), depTime: q('#f-dt').value, arrDate: q('#f-ad').value, arrTime: q('#f-at').value,
       depTerm: q('#f-term').value.trim(), depGate: q('#f-gate').value.trim(), seat: q('#f-seat').value.trim(),
       arrGate: q('#f-agate').value.trim(), belt: q('#f-belt').value.trim(), aircraft: q('#f-ac').value.trim(),
       demo: false, created: existing ? existing.created : Date.now()
@@ -915,6 +986,10 @@ function formView(id, pastMode) {
     toast(existing ? 'Flight updated' : (d.arr < Date.now() ? 'Added to your Passport' : 'Flight added'));
     location.hash = '#/flight/' + rec.id;
   });
+  paintModes(); paintChips(); paintAirline(); upd();
+  const A0 = AP[q('#f-from').value], B0 = AP[q('#f-to').value];
+  if (!(A0 && B0)) drawRoutes([]);
+  if (!existing) setTimeout(() => { if (!q('#f-no').value) q('#f-no').focus({ preventScroll: true }); }, 350);
 }
 
 function passportView() {
