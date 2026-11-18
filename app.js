@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.1';
+const VERSION = '1.2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -19,7 +19,7 @@ const HOME_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Lond
 
 /* ---------- Storage ---------- */
 const KEY = 'samflyer.v1';
-const DEFAULT_SETTINGS = { units: 'both', theme: 'system', apiKey: '', autoRefresh: true, alerts: { delays: true, gates: true, leave: true, landed: true, belt: true } };
+const DEFAULT_SETTINGS = { units: 'both', theme: 'system', globe: 'sat', apiKey: '', autoRefresh: true, alerts: { delays: true, gates: true, leave: true, landed: true, belt: true } };
 function normalise(d) {
   d = d || {};
   const s = Object.assign({}, DEFAULT_SETTINGS, d.settings || {});
@@ -287,9 +287,9 @@ const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2
 
 /* ---------- Split-flap ---------- */
 function flapInner(str) {
-  return [...String(str)].map((c) => (c === ':' || c === ' ' || /[a-z]/.test(c))
+  return [...String(str)].map((c, i) => (c === ':' || c === ' ' || /[a-z]/.test(c))
     ? `<span class="u">${c === ' ' ? '&nbsp;' : esc(c.toUpperCase())}</span>`
-    : `<span class="t">${esc(c)}</span>`).join('');
+    : `<span class="t" style="--d:${i}">${esc(c)}</span>`).join('');
 }
 function flap(str, size = 'md', attrs = '') { return `<span class="flap ${size}" ${attrs} aria-label="${esc(String(str).toUpperCase())}">${flapInner(str)}</span>`; }
 function updateFlap(el, str) {
@@ -321,44 +321,100 @@ function applyTheme() {
   document.documentElement.dataset.theme = t;
   const meta = $('meta[name=theme-color]');
   if (meta) meta.setAttribute('content', t === 'dark' ? '#0B1220' : '#CFE0F2');
-  setTiles();
-  if (lastRoutes) drawRoutes(lastRoutes, { fit: false });
+  restyle();
 }
 if (mq.addEventListener) mq.addEventListener('change', applyTheme); else if (mq.addListener) mq.addListener(applyTheme);
 
-/* ---------- Map ---------- */
-let map = null, tiles = null, layer = null, tileTheme = null, lastRoutes = null;
+/* ---------- Map (MapLibre globe) ---------- */
+const OFM = 'https://tiles.openfreemap.org';
+const GIBS = (layer, ext) => `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${layer}/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.${ext}`;
+const EMPTY = { type: 'FeatureCollection', features: [] };
+const reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let map = null, mapReady = false, lastRoutes = null, styleKey = '', planeMarker = null, nightBroken = false, nightErrors = 0;
+let lineData = EMPTY, apData = EMPTY;
 const cssVar = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function globeMode() {
+  const g = db.settings.globe || 'sat';
+  if (g === 'flat') return 'flat';
+  if (g === 'day' || nightBroken) return 'day';
+  return currentTheme() === 'dark' ? 'night' : 'day';
+}
+function buildStyle() {
+  const mode = globeMode(), dark = currentTheme() === 'dark', flat = mode === 'flat';
+  const arc = cssVar('--arc') || '#5EC8FF';
+  const onImage = !flat;
+  const label = onImage ? '#F4F7FB' : (dark ? '#9AA8BF' : '#3F4A5C');
+  const halo = onImage ? 'rgba(0,0,0,0.75)' : (dark ? '#0B1220' : '#F4F1EA');
+  const sources = {
+    omt: { type: 'vector', url: OFM + '/planet' },
+    lines: { type: 'geojson', data: lineData },
+    aps: { type: 'geojson', data: apData }
+  };
+  const layers = [];
+  if (flat) {
+    layers.push({ id: 'bg', type: 'background', paint: { 'background-color': dark ? '#1A2233' : '#F4F1EA' } });
+    layers.push({ id: 'water', type: 'fill', source: 'omt', 'source-layer': 'water', paint: { 'fill-color': dark ? '#0B1220' : '#CFE0F2' } });
+    layers.push({ id: 'borders', type: 'line', source: 'omt', 'source-layer': 'boundary', filter: ['all', ['==', ['get', 'admin_level'], 2], ['!=', ['get', 'maritime'], 1]], paint: { 'line-color': dark ? '#2F3B57' : '#C4BCAD', 'line-width': 0.8 } });
+  } else {
+    layers.push({ id: 'bg', type: 'background', paint: { 'background-color': mode === 'night' ? '#02040A' : '#0A2A4A' } });
+    sources.sat = { type: 'raster', tiles: [mode === 'night' ? GIBS('VIIRS_Black_Marble', 'png') : GIBS('BlueMarble_NextGeneration', 'jpeg')], tileSize: 256, minzoom: 1, maxzoom: 8, attribution: 'Imagery © NASA EOSDIS GIBS' };
+    layers.push({ id: 'sat', type: 'raster', source: 'sat', paint: { 'raster-fade-duration': 200 } });
+    if (mode === 'night') layers.push({ id: 'borders', type: 'line', source: 'omt', 'source-layer': 'boundary', filter: ['all', ['==', ['get', 'admin_level'], 2], ['!=', ['get', 'maritime'], 1]], paint: { 'line-color': 'rgba(150,180,220,0.25)', 'line-width': 0.7 } });
+  }
+  const name = ['coalesce', ['get', 'name:latin'], ['get', 'name_en'], ['get', 'name']];
+  layers.push({ id: 'cities', type: 'symbol', source: 'omt', 'source-layer': 'place', minzoom: 2.5,
+    filter: ['==', ['get', 'class'], 'city'],
+    layout: { 'text-field': name, 'text-font': ['Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 3, 10, 8, 14], 'symbol-sort-key': ['coalesce', ['get', 'rank'], 10], 'text-padding': 4 },
+    paint: { 'text-color': label, 'text-halo-color': halo, 'text-halo-width': 1.2 } });
+  layers.push(
+    { id: 'l-glow', type: 'line', source: 'lines', filter: ['in', ['get', 'k'], ['literal', ['full', 'flown']]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 9, 'line-blur': 6, 'line-opacity': 0.5 } },
+    { id: 'l-dim', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'dim'], layout: { 'line-cap': 'round' }, paint: { 'line-color': arc, 'line-width': 1.6, 'line-opacity': 0.55 } },
+    { id: 'l-rest', type: 'line', source: 'lines', filter: ['==', ['get', 'k'], 'rest'], layout: { 'line-cap': 'round' }, paint: { 'line-color': arc, 'line-width': 2, 'line-opacity': 0.8, 'line-dasharray': [0.5, 3] } },
+    { id: 'l-main', type: 'line', source: 'lines', filter: ['in', ['get', 'k'], ['literal', ['full', 'flown']]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': arc, 'line-width': 2.6 } },
+    { id: 'ap-dot', type: 'circle', source: 'aps', paint: { 'circle-radius': 4.5, 'circle-color': arc, 'circle-stroke-color': onImage ? '#FFFFFF' : (dark ? '#0B1220' : '#FFFFFF'), 'circle-stroke-width': 1.5 } },
+    { id: 'ap-lbl', type: 'symbol', source: 'aps', layout: { 'text-field': ['get', 'code'], 'text-font': ['Noto Sans Bold'], 'text-size': 12, 'text-anchor': 'left', 'text-offset': [0.7, 0], 'text-allow-overlap': true, 'text-letter-spacing': 0.08 }, paint: { 'text-color': onImage ? '#FFFFFF' : (dark ? '#CFE3FF' : '#18324F'), 'text-halo-color': onImage ? 'rgba(0,0,0,0.8)' : halo, 'text-halo-width': 1.4 } }
+  );
+  return {
+    version: 8, projection: { type: 'globe' },
+    sky: { 'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0] },
+    glyphs: OFM + '/fonts/{fontstack}/{range}.pbf',
+    sources, layers
+  };
+}
 function initMap() {
   if (map) return;
-  if (!window.L) { $('#map-fallback').style.display = 'block'; return; }
-  map = L.map('map', { zoomControl: false, attributionControl: true, worldCopyJump: true, minZoom: 2, maxZoom: 10 }).setView([46, 12], 4);
-  map.attributionControl.setPosition('topright');
-  map.attributionControl.setPrefix(false);
-  layer = L.layerGroup().addTo(map);
-  setTiles();
+  if (!window.maplibregl) { $('#map-fallback').style.display = 'block'; return; }
+  try {
+    map = new maplibregl.Map({ container: 'map', style: buildStyle(), center: [15, 42], zoom: 1.6, minZoom: 1, maxZoom: 9, attributionControl: false, pitchWithRotate: false, dragRotate: false, fadeDuration: 150 });
+  } catch (e) { map = null; $('#map-fallback').textContent = "This phone can't draw the 3D map"; $('#map-fallback').style.display = 'block'; return; }
+  styleKey = globeMode() + currentTheme();
+  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© OpenStreetMap · OpenFreeMap · NASA GIBS' }), 'top-right');
+  if (map.touchZoomRotate && map.touchZoomRotate.disableRotation) map.touchZoomRotate.disableRotation();
+  map.on('load', () => { mapReady = true; if (lastRoutes) drawRoutes(lastRoutes.routes); });
+  map.on('error', (e) => {
+    if (e && e.sourceId === 'sat' && globeMode() === 'night' && ++nightErrors > 6) { nightBroken = true; restyle(); }
+  });
 }
-function setTiles() {
+function restyle() {
   if (!map) return;
-  const t = currentTheme();
-  if (t === tileTheme) return;
-  tileTheme = t;
-  if (tiles) map.removeLayer(tiles);
-  tiles = L.tileLayer(`https://{s}.basemaps.cartocdn.com/${t === 'dark' ? 'dark_nolabels' : 'light_nolabels'}/{z}/{x}/{y}{r}.png`, {
-    subdomains: 'abcd', maxZoom: 19,
-    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>'
-  }).addTo(map);
+  const k = globeMode() + currentTheme();
+  if (k === styleKey) { if (mapReady) { try { const arc = cssVar('--arc'); ['l-glow', 'l-dim', 'l-rest', 'l-main'].forEach((id) => map.setPaintProperty(id, 'line-color', arc)); map.setPaintProperty('ap-dot', 'circle-color', arc); } catch (e) {} } return; }
+  styleKey = k;
+  map.setStyle(buildStyle(), { diff: false });
 }
-function planeSVG(b, color) {
-  return `<svg width="30" height="30" viewBox="-15 -15 30 30" style="transform:rotate(${b.toFixed(0)}deg)"><path d="M0,-11 L1.6,-3.5 L10,2 L10,3.8 L1.6,1.6 L1.2,7.5 L4.2,9.6 L4.2,10.8 L0,9.8 L-4.2,10.8 L-4.2,9.6 L-1.2,7.5 L-1.6,1.6 L-10,3.8 L-10,2 L-1.6,-3.5 Z" fill="${color}"/></svg>`;
+const setTiles = restyle;
+function planeEl() {
+  const el = document.createElement('div');
+  el.className = 'plane-icon';
+  el.innerHTML = '<svg width="30" height="30" viewBox="-15 -15 30 30" aria-hidden="true"><path d="M0,-11 L1.6,-3.5 L10,2 L10,3.8 L1.6,1.6 L1.2,7.5 L4.2,9.6 L4.2,10.8 L0,9.8 L-4.2,10.8 L-4.2,9.6 L-1.2,7.5 L-1.6,1.6 L-10,3.8 L-10,2 L-1.6,-3.5 Z" fill="currentColor"/></svg>';
+  return el;
 }
-/* routes: [{a, b, progress (0..1 or null), dim}] */
+/* routes: [{a, b, progress (0..1 or null), pos, dim}] */
 function drawRoutes(routes, opts = {}) {
-  lastRoutes = routes;
-  if (!map) return;
-  layer.clearLayers();
-  const arc = cssVar('--arc'), dim = cssVar('--arc-dim'), plane = cssVar('--plane');
-  const seen = new Set(), bounds = [];
+  lastRoutes = { routes, opts };
+  const feats = [], aps = new Map(), bounds = [];
+  let plane = null;
+  const ls = (coords, k) => feats.push({ type: 'Feature', properties: { k }, geometry: { type: 'LineString', coordinates: coords.map((p) => [p[1], p[0]]) } });
   routes.forEach((r) => {
     const pts = gcPoints(r.a, r.b);
     pts.forEach((p) => bounds.push(p));
@@ -377,30 +433,37 @@ function drawRoutes(routes, opts = {}) {
         here = pts[k];
         brg = bearing(pts[k - 1], pts[k + 1]);
       }
-      const flown = pts.slice(0, k).concat([here]), rest = [here].concat(pts.slice(k + 1));
-      L.polyline(flown, { color: arc, weight: 9, opacity: 0.25, interactive: false }).addTo(layer);
-      L.polyline(flown, { color: arc, weight: 2.6, opacity: 1, interactive: false }).addTo(layer);
-      L.polyline(rest, { color: arc, weight: 2, opacity: 0.7, dashArray: '2 7', lineCap: 'round', interactive: false }).addTo(layer);
-      L.marker(here, { icon: L.divIcon({ className: 'plane-icon', html: planeSVG(brg, plane), iconSize: [30, 30], iconAnchor: [15, 15] }), interactive: false, zIndexOffset: 1000 }).addTo(layer);
-    } else {
-      L.polyline(pts, { color: arc, weight: 8, opacity: r.dim ? 0.06 : 0.22, interactive: false }).addTo(layer);
-      L.polyline(pts, { color: r.dim ? dim : arc, weight: r.dim ? 1.6 : 2.4, opacity: 1, interactive: false }).addTo(layer);
-    }
-    [r.a, r.b].forEach((ap) => {
-      if (seen.has(ap.code)) return;
-      seen.add(ap.code);
-      L.circleMarker([ap.lat, ap.lon], { radius: 4, color: arc, fillColor: arc, fillOpacity: 1, weight: 1, interactive: false })
-        .bindTooltip(ap.code, { permanent: true, direction: 'right', className: 'ap-label', offset: [4, 0] }).addTo(layer);
-    });
+      ls(pts.slice(0, k).concat([here]), 'flown');
+      ls([here].concat(pts.slice(k + 1)), 'rest');
+      plane = { lng: here[1], lat: here[0], brg };
+    } else ls(pts, r.dim ? 'dim' : 'full');
+    [r.a, r.b].forEach((ap) => aps.set(ap.code, { type: 'Feature', properties: { code: ap.code }, geometry: { type: 'Point', coordinates: [ap.lon, ap.lat] } }));
   });
+  lineData = { type: 'FeatureCollection', features: feats };
+  apData = { type: 'FeatureCollection', features: [...aps.values()] };
+  if (!map) return;
+  if (plane) {
+    if (!planeMarker) planeMarker = new maplibregl.Marker({ element: planeEl(), rotationAlignment: 'map', pitchAlignment: 'map' });
+    planeMarker.setLngLat([plane.lng, plane.lat]).setRotation(plane.brg);
+    if (!planeMarker._map) planeMarker.addTo(map);
+  } else if (planeMarker) { planeMarker.remove(); planeMarker = null; }
+  if (!mapReady) return;
+  try { map.getSource('lines').setData(lineData); map.getSource('aps').setData(apData); } catch (e) { /* style still loading */ }
   if (opts.fit !== false) fitTo(bounds);
 }
 function fitTo(bounds) {
-  if (!map) return;
-  map.invalidateSize();
-  if (!bounds.length) { map.setView([46, 12], 4, { animate: false }); return; }
-  const top = 80, bottom = visibleSheet() + 16;
-  map.fitBounds(L.latLngBounds(bounds), { paddingTopLeft: [40, top], paddingBottomRight: [40, bottom], maxZoom: 6, animate: false });
+  if (!map || !mapReady) return;
+  if (snap === 'full' && !document.body.classList.contains('no-map')) return;
+  const H = window.innerHeight, W = window.innerWidth;
+  const top = 76, bottom = Math.max(24, Math.min(visibleSheet() + 16, H - top - 160));
+  const duration = reduceMotion() ? 0 : 900;
+  map.resize();
+  if (!bounds.length) { map.easeTo({ center: [15, 42], zoom: 1.6, padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
+  let minLat = 90, maxLat = -90, minLon = 1e9, maxLon = -1e9;
+  bounds.forEach(([la, lo]) => { minLat = Math.min(minLat, la); maxLat = Math.max(maxLat, la); minLon = Math.min(minLon, lo); maxLon = Math.max(maxLon, lo); });
+  if (maxLon - minLon > 300) { map.easeTo({ center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2], zoom: 1.2, duration }); return; }
+  const side = Math.min(48, W / 6);
+  map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: { top, bottom, left: side, right: side }, maxZoom: 5.5, duration, essential: true });
 }
 
 /* ---------- Sheet ---------- */
@@ -446,7 +509,7 @@ function endDrag(cancel) {
 }
 grab.addEventListener('pointerup', () => endDrag(false));
 grab.addEventListener('pointercancel', () => endDrag(true));
-window.addEventListener('resize', () => { if (!document.body.classList.contains('no-map')) setSnap(snap, false); });
+window.addEventListener('resize', () => { if (!document.body.classList.contains('no-map')) setSnap(snap, false); moveTabPill(pillTab); });
 
 /* ---------- Layout + toast ---------- */
 const ICON = {
@@ -464,10 +527,38 @@ function layout({ useMap = true, tabs = true, snapTo = 'half', left = '', right 
   $('#top-left').innerHTML = left;
   $('#top-right').innerHTML = right;
   $$('#tabbar .tab').forEach((t) => { if (t.dataset.tab === tab) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current'); });
+  moveTabPill(tab);
   mapRefresher = null;
   if (posTimer) { clearInterval(posTimer); posTimer = null; }
-  if (useMap) { initMap(); setSnap(snapTo, false); } else { sheet.classList.remove('anim'); sheet.style.transform = 'none'; }
+  const wasMap = !document.body.dataset.nomap;
+  document.body.dataset.nomap = useMap ? '' : '1';
+  if (useMap) { initMap(); setSnap(snapTo, navDir != null && wasMap && !reduceMotion()); } else { sheet.classList.remove('anim'); sheet.style.transform = 'none'; }
   $('#content').scrollTop = 0;
+}
+let navDir = null, prevScreen = null, pillTab = null;
+function moveTabPill(tab) {
+  const pillEl = $('#tabpill'), t = tab && $(`#tabbar .tab[data-tab="${tab}"]`);
+  if (!pillEl) return;
+  if (!t) { pillEl.style.opacity = '0'; pillTab = null; return; }
+  const place = () => { pillEl.style.left = (t.offsetLeft + 4) + 'px'; pillEl.style.width = (t.offsetWidth - 8) + 'px'; pillEl.style.opacity = '1'; };
+  if (pillTab && pillTab !== tab && !reduceMotion()) {
+    place();
+    pillEl.classList.remove('squash'); void pillEl.offsetWidth; pillEl.classList.add('squash');
+    t.classList.remove('hop'); void t.offsetWidth; t.classList.add('hop');
+  } else {
+    const tr = pillEl.style.transition; pillEl.style.transition = 'none'; place(); void pillEl.offsetWidth; pillEl.style.transition = tr;
+  }
+  pillTab = tab;
+}
+function applyEnter(dir, contentOnly) {
+  if (!dir || reduceMotion()) return;
+  const els = contentOnly ? [$('#content')] : [$('#grab-content'), $('#content')];
+  els.forEach((el) => { el.classList.remove('a-sl', 'a-sr', 'a-up', 'a-fade'); void el.offsetWidth; el.classList.add('a-' + dir); });
+  const host = $('#content').firstElementChild;
+  if (host && host.children.length > 1) {
+    [...host.children].forEach((c, i) => c.style.setProperty('--i', Math.min(i, 10)));
+    host.classList.remove('stg'); void host.offsetWidth; host.classList.add('stg');
+  }
 }
 let toastTimer = null;
 function toast(msg) {
@@ -883,6 +974,8 @@ function settingsView() {
     <div class="card"><h2>Units</h2>${seg('units', s.units, [['mi', 'Miles · km/h'], ['nm', 'Nautical · kn'], ['both', 'Both']])}<span class="note">${ex}</span></div>
     <div class="card"><h2>Look</h2>${seg('theme', s.theme, [['system', 'Follow phone'], ['dark', 'Dark'], ['light', 'Light']])}
       <div class="between" style="font-size:14px"><span>Times shown in</span><b>Local airport time</b></div></div>
+    <div class="card"><h2>Globe</h2>${seg('globe', s.globe || 'sat', [['sat', 'Satellite'], ['day', 'Day photo'], ['flat', 'Flat map']])}
+      <span class="note">${{ sat: 'NASA Earth photo in light mode, city lights at night in dark mode.', day: 'NASA daytime Earth photo all the time.', flat: 'Clean drawn map in the app colours — sharpest when zoomed in.' }[s.globe || 'sat']} City names appear as you zoom in.</span></div>
     <div class="card" style="gap:2px"><h2 style="margin-bottom:6px">Alerts</h2>
       ${alerts.map(([k, l, d]) => `<div class="setrow"><div style="flex:1"><div style="font-size:14px;font-weight:700">${l}</div><div class="note">${d}</div></div><button class="switch" role="switch" aria-label="${l}" aria-checked="${!!s.alerts[k]}" data-act="alert" data-v="${k}"></button></div>`).join('')}
       <div class="notice" style="margin-top:10px">Alerts switch on in a later update — your choices are saved now. They will need the app installed on your home screen.</div></div>
@@ -903,20 +996,22 @@ function settingsView() {
       <div class="grid2"><button class="btn ghost" data-act="export">Export backup</button><button class="btn ghost" data-act="import">Import backup</button></div>
       <input type="file" id="imp" accept="application/json,.json" class="sr" aria-label="Choose backup file">
       ${demos ? `<button class="btn ghost" data-act="removeDemo">Remove ${demos} demo flight${demos === 1 ? '' : 's'}</button>` : ''}</div>
-    <div class="note" style="text-align:center">Samflyer ${VERSION} · ${Object.keys(AP).length} airports built in · Map © OpenStreetMap contributors © CARTO</div>
+    <div class="note" style="text-align:center">Samflyer ${VERSION} · ${Object.keys(AP).length} airports built in · Map © OpenStreetMap contributors · OpenFreeMap · Earth imagery NASA GIBS</div>
   </div>`;
   $('#imp').addEventListener('change', importBackup);
 }
 
 /* ---------- Actions ---------- */
 let delArmed = null;
+function rerenderSettings() { const y = $('#content').scrollTop; navDir = null; settingsView(); $('#content').scrollTop = y; }
 const ACT = {
-  homeTab: (el, v) => { homeTab = v; home(); },
-  period: (el, v) => { ppPeriod = v === 'all' ? 'all' : +v; passportView(); },
-  units: (el, v) => { db.settings.units = v; save(); settingsView(); },
-  theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); settingsView(); },
+  homeTab: (el, v) => { if (homeTab === v) return; homeTab = v; navDir = null; home(); applyEnter(v === 'past' ? 'sl' : 'sr', true); },
+  period: (el, v) => { ppPeriod = v === 'all' ? 'all' : +v; navDir = null; passportView(); applyEnter('fade', true); },
+  units: (el, v) => { db.settings.units = v; save(); rerenderSettings(); },
+  theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); rerenderSettings(); },
+  globe: (el, v) => { db.settings.globe = v; save(); nightBroken = false; nightErrors = 0; restyle(); rerenderSettings(); },
   alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); },
-  fit: () => { if (lastRoutes) drawRoutes(lastRoutes); },
+  fit: () => { if (lastRoutes) drawRoutes(lastRoutes.routes); },
   refresh: async (el, v) => {
     el.disabled = true; el.textContent = 'Checking…';
     try { const ch = await refreshFlight(v); toast(ch.length ? ch.join(' · ') : 'Up to date'); }
@@ -931,9 +1026,9 @@ const ACT = {
   saveKey: () => {
     const k = ($('#key').value || '').trim();
     if (!k) return toast('Paste your key first');
-    db.settings.apiKey = k; save(); toast('Key saved on this phone'); settingsView();
+    db.settings.apiKey = k; save(); toast('Key saved on this phone'); rerenderSettings();
   },
-  removeKey: () => { db.settings.apiKey = ''; save(); toast('Key removed'); settingsView(); },
+  removeKey: () => { db.settings.apiKey = ''; save(); toast('Key removed'); rerenderSettings(); },
   testKey: async (el) => {
     el.disabled = true; el.textContent = 'Testing…';
     try {
@@ -944,7 +1039,7 @@ const ACT = {
   },
   autoRefresh: (el) => { db.settings.autoRefresh = !db.settings.autoRefresh; save(); el.setAttribute('aria-checked', String(db.settings.autoRefresh)); },
   demo: () => { addDemo(); toast('Demo flights added — remove them any time in Settings'); route(); },
-  removeDemo: () => { db.flights = db.flights.filter((f) => !f.demo); save(); toast('Demo flights removed'); settingsView(); },
+  removeDemo: () => { db.flights = db.flights.filter((f) => !f.demo); save(); toast('Demo flights removed'); rerenderSettings(); },
   export: () => {
     const blob = new Blob([JSON.stringify({ app: 'samflyer', version: VERSION, exported: new Date().toISOString(), flights: db.flights, settings: db.settings }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -981,7 +1076,7 @@ function importBackup(e) {
       if (data.settings) db.settings = normalise({ settings: data.settings }).settings;
       save(); applyTheme();
       toast(`Imported ${ok.length} flight${ok.length === 1 ? '' : 's'}`);
-      settingsView();
+      rerenderSettings();
     } catch (err) { toast("That file isn't a Samflyer backup"); }
   };
   r.readAsText(file);
@@ -1005,9 +1100,21 @@ function addDemo() {
 }
 
 /* ---------- Router + ticker ---------- */
+const TAB_ORDER = { home: 0, passport: 1, settings: 2 };
 function route() {
   const parts = (location.hash.slice(1) || '/').split('/');
   const a = parts[1] || '', b = parts[2] || '';
+  const screen = (a || 'home') + (b ? '/' + b : '');
+  const kind = a || 'home';
+  if (prevScreen === null) navDir = 'fade';
+  else if (prevScreen === screen) navDir = null;
+  else {
+    const pk = prevScreen.split('/')[0];
+    if (kind in TAB_ORDER && pk in TAB_ORDER) navDir = TAB_ORDER[kind] > TAB_ORDER[pk] ? 'sl' : 'sr';
+    else if (!(kind in TAB_ORDER)) navDir = 'up';
+    else navDir = 'fade';
+  }
+  prevScreen = screen;
   try {
     if (a === 'flight') flightView(decodeURIComponent(b));
     else if (a === 'add') formView(null, b === 'past');
@@ -1015,6 +1122,7 @@ function route() {
     else if (a === 'passport') passportView();
     else if (a === 'settings') settingsView();
     else home();
+    applyEnter(navDir);
   } catch (err) {
     console.error(err);
     $('#content').innerHTML = `<div class="card" style="margin-top:12px"><h2>Something went wrong</h2><div class="note">${esc(err.message)}</div><a class="btn ghost" href="#/">Back to My Flights</a></div>`;

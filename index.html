@@ -14,29 +14,27 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.23.0/dist/maplibre-gl.css">
 <style>
 :root{--safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px);--sheet-w:560px;--tab-h:64px}
-[data-theme=dark]{--water:#0B1220;--sheet:rgba(20,20,26,.86);--sheet-solid:#14141A;--page:#0B0B0F;--card:rgba(255,255,255,.07);--card-solid:#17171C;--text:#F5F5F7;--muted:#A3A3AE;--line:rgba(255,255,255,.12);--amber:#FFB020;--amber-bg:rgba(255,176,32,.15);--green:#3DDC6A;--green-bg:rgba(61,220,106,.14);--blue:#5EC8FF;--blue-bg:rgba(94,200,255,.15);--on-blue:#0B1220;--handle:rgba(255,255,255,.3);--arc:#5EC8FF;--arc-dim:rgba(94,200,255,.45);--label:#CFE3FF;--plane:#FFFFFF;--red:#FF6B5E;--red-bg:rgba(255,107,94,.15)}
-[data-theme=light]{--water:#CFE0F2;--sheet:rgba(255,255,255,.9);--sheet-solid:#FFFFFF;--page:#F2F2F5;--card:rgba(0,0,0,.045);--card-solid:#FFFFFF;--text:#111114;--muted:#5A5A64;--line:rgba(0,0,0,.12);--amber:#8A5300;--amber-bg:rgba(200,120,0,.14);--green:#1B7F35;--green-bg:rgba(27,127,53,.12);--blue:#1E6FD9;--blue-bg:rgba(30,111,217,.12);--on-blue:#FFFFFF;--handle:rgba(0,0,0,.25);--arc:#1E6FD9;--arc-dim:rgba(30,111,217,.5);--label:#18324F;--plane:#0E1A2B;--red:#B3261E;--red-bg:rgba(179,38,30,.1)}
+[data-theme=dark]{--space:#02040A;--water:#0B1220;--sheet:rgba(20,20,26,.86);--sheet-solid:#14141A;--page:#0B0B0F;--card:rgba(255,255,255,.07);--card-solid:#17171C;--text:#F5F5F7;--muted:#A3A3AE;--line:rgba(255,255,255,.12);--amber:#FFB020;--amber-bg:rgba(255,176,32,.15);--green:#3DDC6A;--green-bg:rgba(61,220,106,.14);--blue:#5EC8FF;--blue-bg:rgba(94,200,255,.15);--on-blue:#0B1220;--handle:rgba(255,255,255,.3);--arc:#5EC8FF;--arc-dim:rgba(94,200,255,.45);--label:#CFE3FF;--plane:#FFFFFF;--red:#FF6B5E;--red-bg:rgba(255,107,94,.15)}
+[data-theme=light]{--space:#E6ECF4;--water:#CFE0F2;--sheet:rgba(255,255,255,.9);--sheet-solid:#FFFFFF;--page:#F2F2F5;--card:rgba(0,0,0,.045);--card-solid:#FFFFFF;--text:#111114;--muted:#5A5A64;--line:rgba(0,0,0,.12);--amber:#8A5300;--amber-bg:rgba(200,120,0,.14);--green:#1B7F35;--green-bg:rgba(27,127,53,.12);--blue:#1E6FD9;--blue-bg:rgba(30,111,217,.12);--on-blue:#FFFFFF;--handle:rgba(0,0,0,.25);--arc:#1E6FD9;--arc-dim:rgba(30,111,217,.5);--label:#18324F;--plane:#0E1A2B;--red:#B3261E;--red-bg:rgba(179,38,30,.1)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;overflow:hidden;background:var(--water);color:var(--text);font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--space);color:var(--text);font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 button,input,select{font-family:inherit;font-size:inherit;color:inherit}
 button{cursor:pointer}
 a{color:var(--blue)}
 .mono{font-family:"Space Mono",ui-monospace,Menlo,monospace}
 .num{font-variant-numeric:tabular-nums}
-#map{position:fixed;inset:0;background:var(--water);z-index:0}
+#map{position:fixed;inset:0;background:var(--space);z-index:0}
 #map-fallback{position:fixed;left:0;right:0;top:calc(var(--safe-top) + 120px);text-align:center;color:var(--muted);font-size:13px;z-index:1;display:none}
 body.no-map #map,body.no-map #map-fallback,body.no-map #topbar{display:none}
 body.no-map{background:var(--page)}
-.leaflet-container{background:var(--water)!important;font-family:inherit}
-.leaflet-control-attribution{background:var(--sheet)!important;color:var(--muted)!important;font-size:9px!important;border-radius:0 0 0 8px;margin-top:var(--safe-top)!important}
-.leaflet-control-attribution a{color:var(--muted)!important}
-.ap-label{background:transparent;border:none;box-shadow:none;color:var(--label);font-family:"Space Mono",monospace;font-weight:700;font-size:11px;padding:0 0 0 2px}
-.ap-label:before{display:none}
-.plane-icon{background:none;border:none}
-.plane-icon svg{filter:drop-shadow(0 0 6px var(--arc))}
+.maplibregl-map{font-family:inherit}
+.maplibregl-ctrl-top-right{top:calc(var(--safe-top) + 64px)!important}
+.maplibregl-ctrl-attrib.maplibregl-compact{background:var(--sheet)!important;color:var(--muted)}
+.maplibregl-ctrl-attrib a{color:var(--muted)!important}
+.plane-icon{color:var(--plane);filter:drop-shadow(0 0 6px var(--arc));width:30px;height:30px}
 #topbar{position:fixed;z-index:20;top:calc(var(--safe-top) + 14px);left:16px;right:16px;display:flex;justify-content:space-between;pointer-events:none}
 #topbar>div{display:flex;gap:8px;align-items:center;pointer-events:auto}
 .round{width:44px;height:44px;border-radius:22px;border:none;background:var(--sheet);color:var(--text);display:flex;align-items:center;justify-content:center;-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);box-shadow:0 2px 10px rgba(0,0,0,.2)}
@@ -122,6 +120,41 @@ details summary{cursor:pointer;font-weight:700;font-size:14px;min-height:44px;di
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--tab-h) + var(--safe-bottom) + 20px);background:var(--text);color:var(--page);padding:12px 18px;border-radius:14px;font-size:14px;font-weight:700;z-index:50;box-shadow:0 6px 20px rgba(0,0,0,.3)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 :focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+
+/* ---- Motion: quick, under half a second, nothing over the top ---- */
+html{touch-action:manipulation}
+button,a,.tab,.seg,.chips,.flap,.pill,.grab{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#tabbar{overflow:hidden}
+.tab{position:relative;z-index:1}
+.tabpill{position:absolute;z-index:0;top:6px;height:48px;border-radius:16px;background:var(--card-solid);box-shadow:inset 0 0 0 1px var(--line);transition:left .42s cubic-bezier(.34,1.56,.64,1),width .42s cubic-bezier(.34,1.56,.64,1),opacity .2s}
+[data-theme=dark] .tabpill{background:rgba(255,255,255,.08)}
+.tabpill.squash{animation:squash .42s ease}
+@keyframes squash{0%{transform:scale(1)}35%{transform:scale(1.14,.84)}65%{transform:scale(.96,1.06)}100%{transform:scale(1)}}
+.tab.hop svg{animation:hop .36s cubic-bezier(.34,1.56,.64,1)}
+@keyframes hop{0%{transform:translateY(0)}40%{transform:translateY(-5px)}100%{transform:translateY(0)}}
+.a-sl{animation:inL .3s cubic-bezier(.2,.8,.2,1) both}
+.a-sr{animation:inR .3s cubic-bezier(.2,.8,.2,1) both}
+.a-up{animation:inU .3s cubic-bezier(.2,.8,.2,1) both}
+.a-fade{animation:fadeIn .22s ease both}
+@keyframes inL{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}
+@keyframes inR{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}
+@keyframes inU{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.stg>*{animation:inU .32s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0) * 35ms)}
+.flap{perspective:300px}
+.flap .t{animation:flapIn .34s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--d,0) * 22ms)}
+@keyframes flapIn{from{transform:rotateX(-90deg);opacity:.2}to{transform:none;opacity:1}}
+.pill{animation:pop .3s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes pop{from{transform:scale(.85);opacity:0}to{transform:none;opacity:1}}
+.bar>i{transform-origin:left;animation:grow .5s cubic-bezier(.2,.8,.2,1) both;transition:width .6s ease}
+@keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.btn,.round,.list-row,a.card,.seg button,.chips button,.tab,.switch,.badge{transition:transform .12s ease,background-color .2s,color .2s,border-color .2s}
+.btn:active,.list-row:active,a.card:active,.seg button:active,.chips button:active{transform:scale(.97)}
+.round:active,.switch:active{transform:scale(.9)}
+.toast{animation:toastIn .26s cubic-bezier(.2,.8,.2,1) both}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+.plane-icon svg{transition:transform .3s ease}
+@media (prefers-reduced-motion: reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
@@ -133,11 +166,12 @@ details summary{cursor:pointer;font-weight:700;font-size:14px;min-height:44px;di
   <div id="content"></div>
 </section>
 <nav id="tabbar" aria-label="Main">
+  <span class="tabpill" id="tabpill" aria-hidden="true"></span>
   <a class="tab" href="#/" data-tab="home"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/></svg>Flights</a>
   <a class="tab" href="#/passport" data-tab="passport"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><circle cx="12" cy="9" r="3"/></svg>Passport</a>
   <a class="tab" href="#/settings" data-tab="settings"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Settings</a>
 </nav>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/maplibre-gl@5.23.0/dist/maplibre-gl.js"></script>
 <script src="data.js"></script>
 <script src="app.js"></script>
 </body>
