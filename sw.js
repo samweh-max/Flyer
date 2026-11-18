@@ -1,5 +1,5 @@
 // Samflyer service worker: keeps the app working offline.
-const CACHE = 'samflyer-v1.6';
+const CACHE = 'samflyer-v1.7';
 const SHELL = ['./', 'index.html', 'app.js', 'data.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

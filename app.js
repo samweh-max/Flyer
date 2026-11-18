@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.6';
+const VERSION = '1.7';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -330,6 +330,7 @@ const OFM = 'https://tiles.openfreemap.org';
 const GIBS = (layer, ext) => `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${layer}/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.${ext}`;
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let userMoved = false;
 let map = null, mapReady = false, lastRoutes = null, styleKey = '', planeMarker = null, nightBroken = false, nightErrors = 0;
 let lineData = EMPTY, apData = EMPTY;
 const cssVar = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -385,7 +386,8 @@ function initMap() {
   if (map) return;
   if (!window.maplibregl) { $('#map-fallback').style.display = 'block'; return; }
   try {
-    map = new maplibregl.Map({ container: 'map', style: buildStyle(), center: [10, 45], zoom: 1.1, minZoom: 0, maxZoom: 9, attributionControl: false, pitchWithRotate: false, dragRotate: false, fadeDuration: 150 });
+    map = new maplibregl.Map({ container: 'map', style: buildStyle(), center: [10, 45], zoom: 1.1, minZoom: 0, maxZoom: 9, attributionControl: false, interactive: true, dragPan: true, scrollZoom: true, doubleClickZoom: true, touchZoomRotate: true, pitchWithRotate: false, dragRotate: false, keyboard: false, fadeDuration: 150 });
+    map.on('movestart', (e) => { if (e && e.originalEvent) userMoved = true; });
   } catch (e) { map = null; $('#map-fallback').textContent = "This phone can't draw the 3D map"; $('#map-fallback').style.display = 'block'; return; }
   styleKey = globeMode() + currentTheme();
   if (map.touchZoomRotate && map.touchZoomRotate.disableRotation) map.touchZoomRotate.disableRotation();
@@ -448,17 +450,19 @@ function drawRoutes(routes, opts = {}) {
   } else if (planeMarker) { planeMarker.remove(); planeMarker = null; }
   if (!mapReady) return;
   try { map.getSource('lines').setData(lineData); map.getSource('aps').setData(apData); } catch (e) { /* style still loading */ }
-  if (opts.fit !== false) fitTo(bounds);
+  if (opts.fit !== false) fitTo(bounds, opts.force);
 }
-function fitTo(bounds) {
+function fitTo(bounds, force) {
   if (!map || !mapReady) return;
+  if (userMoved && !force) return;
   if (snap === 'full' && !document.body.classList.contains('no-map')) return;
   const H = appH(), W = appEl.offsetWidth || window.innerWidth;
   const safeTop = safeTopPx();
-  const top = Math.max(64, safeTop + 56), bottom = Math.max(24, Math.min(visibleSheet() + 12, H - top - 160));
+  const hasTopButtons = !!$('#top-left').children.length || !!$('#top-right').querySelector('a,button');
+  const top = safeTop + (hasTopButtons ? 62 : 14), bottom = Math.max(24, Math.min(visibleSheet() + 12, H - top - 160));
   const duration = reduceMotion() ? 0 : 900;
   map.resize();
-  const globeZoom = () => { const D = Math.max(160, Math.min(W - 64, H - top - bottom - 40)); return Math.log2(D * Math.PI / 512); };
+  const globeZoom = () => { const D = Math.max(160, Math.min(W - 48, H - top - bottom - 20)); return Math.log2(D * Math.PI / 512); };
   if (!bounds.length) { map.easeTo({ center: [10, 45], zoom: globeZoom(), padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
   let minLat = 90, maxLat = -90, minLon = 1e9, maxLon = -1e9;
   bounds.forEach(([la, lo]) => { minLat = Math.min(minLat, la); maxLat = Math.max(maxLat, la); minLon = Math.min(minLon, lo); maxLon = Math.max(maxLon, lo); });
@@ -565,6 +569,7 @@ function layout({ useMap = true, tabs = true, snapTo = 'half', left = '', right 
   $('#top-right').innerHTML = right;
   $$('#tabbar .tab').forEach((t) => { if (t.dataset.tab === tab) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current'); });
   moveTabPill(tab);
+  if (navDir != null) userMoved = false;
   mapRefresher = null;
   if (posTimer) { clearInterval(posTimer); posTimer = null; }
   const wasMap = !document.body.dataset.nomap;
@@ -611,7 +616,7 @@ const pill = (st) => `<span class="pill ${st.cls}">${esc(st.label)}</span>`;
 let homeTab = 'upcoming', ppPeriod = 'all';
 
 function home() {
-  layout({ tab: 'home', snapTo: 'half' });
+  layout({ tab: 'home', snapTo: 'half', right: `<button class="round" data-act="fit" aria-label="Re-centre the globe">${ICON.fit}</button>` });
   const now = Date.now();
   const all = flightsD();
   const upcoming = all.filter((f) => f.arr > now).sort((a, b) => a.dep - b.dep);
@@ -1012,7 +1017,7 @@ function formView(id, pastMode) {
 }
 
 function passportView() {
-  layout({ tab: 'passport', snapTo: 'half' });
+  layout({ tab: 'passport', snapTo: 'half', right: `<button class="round" data-act="fit" aria-label="Re-centre the globe">${ICON.fit}</button>` });
   const now = Date.now();
   const past = flightsD().filter((f) => f.arr <= now);
   const years = [...new Set(past.map(yearOf))].sort((a, b) => b - a);
@@ -1022,7 +1027,7 @@ function passportView() {
   $('#grab-content').innerHTML = `<div class="between" style="flex-wrap:wrap;padding-bottom:6px"><h1>Passport</h1>
     <div class="chips" role="group" aria-label="Period">${['all', ...years].map((y) => `<button data-act="period" data-v="${y}" aria-pressed="${String(y) === String(ppPeriod)}">${y === 'all' ? 'All time' : y}</button>`).join('')}</div></div>`;
   const routes = dedupeRoutes(sel);
-  $('#top-right').innerHTML = past.length ? `<span class="chip-float">${routes.length} route${routes.length === 1 ? '' : 's'} · ${periodLabel}</span>` : '';
+  $('#top-right').innerHTML = (past.length ? `<span class="chip-float">${routes.length} route${routes.length === 1 ? '' : 's'} · ${periodLabel}</span>` : '') + `<button class="round" data-act="fit" aria-label="Re-centre the globe">${ICON.fit}</button>`;
   if (!past.length) {
     $('#content').innerHTML = `<div class="card empty" style="margin-top:12px"><div style="font-size:17px;font-weight:800">Your Passport is empty</div><div class="note">Flights you've taken appear here with lifetime miles, hours, airports and countries. Add your older trips to fill it in.</div><a class="btn" href="#/add/past">${ICON.plus}Add a past flight</a>${db.flights.some((f) => f.demo) ? '' : '<button class="btn ghost" data-act="demo">Try it with demo flights</button>'}</div>`;
     drawRoutes([]);
@@ -1105,7 +1110,7 @@ const ACT = {
   theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); rerenderSettings(); },
   globe: (el, v) => { db.settings.globe = v; save(); nightBroken = false; nightErrors = 0; restyle(); rerenderSettings(); },
   alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); },
-  fit: () => { if (lastRoutes) drawRoutes(lastRoutes.routes); },
+  fit: () => { userMoved = false; if (lastRoutes) drawRoutes(lastRoutes.routes, { force: true }); },
   refresh: async (el, v) => {
     el.disabled = true; el.textContent = 'Checking…';
     try { const ch = await refreshFlight(v); toast(ch.length ? ch.join(' · ') : 'Up to date'); }
