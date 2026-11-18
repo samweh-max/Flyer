@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.0';
+const VERSION = '1.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -19,15 +19,16 @@ const HOME_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Lond
 
 /* ---------- Storage ---------- */
 const KEY = 'samflyer.v1';
-const DEFAULT_SETTINGS = { units: 'both', theme: 'system', alerts: { delays: true, gates: true, leave: true, landed: true, belt: true } };
+const DEFAULT_SETTINGS = { units: 'both', theme: 'system', apiKey: '', autoRefresh: true, alerts: { delays: true, gates: true, leave: true, landed: true, belt: true } };
 function normalise(d) {
   d = d || {};
   const s = Object.assign({}, DEFAULT_SETTINGS, d.settings || {});
   s.alerts = Object.assign({}, DEFAULT_SETTINGS.alerts, (d.settings && d.settings.alerts) || {});
-  return { flights: Array.isArray(d.flights) ? d.flights : [], settings: s };
+  return { flights: Array.isArray(d.flights) ? d.flights : [], settings: s, usage: d.usage || { month: '', units: 0 }, airports: d.airports || {} };
 }
 function load() { try { return normalise(JSON.parse(localStorage.getItem(KEY))); } catch (e) { return normalise({}); } }
 let db = load();
+Object.values(db.airports).forEach((a) => { if (!AP[a.code]) AP[a.code] = a; });
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(db)); }
   catch (e) { toast('Could not save — phone storage may be full'); }
@@ -73,6 +74,7 @@ function durStr(ms) {
 }
 function agoStr(ms) {
   const m = Math.round(ms / 60000);
+  if (m < 1) return 'just now';
   if (m < 60) return `${m} min ago`;
   const h = Math.round(m / 60);
   if (h < 48) return `${h}h ago`;
@@ -133,20 +135,144 @@ function speedStr(mph) {
   return `${nf.format(kmh)} km/h · ${nf.format(kn)} kn`;
 }
 
+/* ---------- Live data (AeroDataBox via RapidAPI + free ADS-B positions) ---------- */
+const ADB_HOST = 'aerodatabox.p.rapidapi.com';
+const UNITS_PER_LOOKUP = 2, FREE_UNITS = 400, AUTO_STOP_AT = 360;
+const monthKey = () => localDateTime(Date.now(), HOME_TZ).date.slice(0, 7);
+function unitsUsed() { if (db.usage.month !== monthKey()) db.usage = { month: monthKey(), units: 0 }; return db.usage.units; }
+function addUnits(n) { unitsUsed(); db.usage.units += n; save(); }
+const hasKey = () => !!(db.settings.apiKey && db.settings.apiKey.trim());
+async function adb(path, cost = UNITS_PER_LOOKUP) {
+  if (!hasKey()) throw new Error('nokey');
+  const res = await fetch(`https://${ADB_HOST}${path}`, { headers: { 'x-rapidapi-key': db.settings.apiKey.trim(), 'x-rapidapi-host': ADB_HOST } });
+  if (cost) addUnits(cost);
+  if (res.status === 204 || res.status === 404) return [];
+  if (res.status === 401 || res.status === 403) throw new Error('badkey');
+  if (res.status === 429) throw new Error('quota');
+  if (!res.ok) throw new Error('http' + res.status);
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : [];
+}
+const ERR_TEXT = { nokey: 'Add your flight-data key in Settings first.', badkey: "The key wasn't accepted. Check it in Settings, and that you're subscribed to AeroDataBox's free plan.", quota: "This month's free lookups are used up.", offline: 'No internet connection.' };
+const errText = (e) => ERR_TEXT[e.message] || (e.name === 'TypeError' ? ERR_TEXT.offline : "Couldn't reach the flight-data service.");
+const parseT = (t) => (t && t.utc ? Date.parse(t.utc.replace(' ', 'T')) : null);
+function ensureAirport(a) {
+  if (!a) return null;
+  const code = a.iata || a.icao;
+  if (!code) return null;
+  if (AP[code]) return code;
+  if (!a.location || !a.timeZone) return null;
+  const rec = { code, name: a.shortName || a.name, city: a.municipalityName || a.name, cc: a.countryCode || '', lat: +a.location.lat, lon: +a.location.lon, tz: a.timeZone };
+  AP[code] = rec; db.airports[code] = rec; save();
+  return code;
+}
+/* Turn one AeroDataBox flight into our fields */
+function fromAdb(x) {
+  const d = x.departure || {}, a = x.arrival || {};
+  const from = ensureAirport(d.airport), to = ensureAirport(a.airport);
+  const depS = parseT(d.scheduledTime), arrS = parseT(a.scheduledTime);
+  const best = (m) => parseT(m.runwayTime) || parseT(m.revisedTime) || parseT(m.predictedTime) || parseT(m.scheduledTime);
+  const loc = x.location;
+  return {
+    from, to, depS, arrS,
+    flightNo: (x.number || '').replace(/\s+/g, ''), airline: (x.airline && x.airline.name) || '',
+    live: {
+      status: x.status || 'Unknown', depBest: best(d), arrBest: best(a),
+      depTerm: d.terminal || '', depGate: d.gate || '', checkIn: d.checkInDesk || '', arrTerm: a.terminal || '', arrGate: a.gate || '', belt: a.baggageBelt || '',
+      model: (x.aircraft && x.aircraft.model) || '', reg: (x.aircraft && x.aircraft.reg) || '', modeS: ((x.aircraft && x.aircraft.modeS) || '').toLowerCase(),
+      callSign: x.callSign || '', fetchedAt: Date.now(),
+      pos: loc && loc.lat != null ? { lat: loc.lat, lon: loc.lon, altFt: loc.altitude && loc.altitude.feet, gsKt: loc.groundSpeed && loc.groundSpeed.kt, track: loc.trueTrack && loc.trueTrack.deg, at: parseT({ utc: loc.reportedAtUtc }) || Date.now(), src: 'AeroDataBox' } : null
+    }
+  };
+}
+/* Refresh one stored flight. Returns a list of human-readable changes. */
+async function refreshFlight(id) {
+  const f = db.flights.find((x) => x.id === id);
+  if (!f || !f.flightNo) throw new Error('nonumber');
+  const list = await adb(`/flights/number/${encodeURIComponent(f.flightNo)}/${f.depDate}?withAircraftImage=false&withLocation=true&dateLocalRole=Departure`);
+  const arr = Array.isArray(list) ? list : [list];
+  const match = arr.map(fromAdb).find((m) => m.from === f.from && m.to === f.to) || (arr.length === 1 ? fromAdb(arr[0]) : null);
+  if (!match) { f.live = Object.assign({}, f.live || {}, { fetchedAt: Date.now(), notFound: true }); save(); return []; }
+  const old = f.live || {}, L = match.live, changes = [];
+  if (old.fetchedAt) {
+    if (L.depGate && L.depGate !== old.depGate) changes.push(`Gate ${old.depGate ? 'changed to' : 'is'} ${L.depGate}`);
+    if (L.arrGate && L.arrGate !== old.arrGate) changes.push(`Arrival gate ${L.arrGate}`);
+    if (L.belt && L.belt !== old.belt) changes.push(`Bags on belt ${L.belt}`);
+    if (old.depBest && L.depBest && Math.abs(L.depBest - old.depBest) >= 5 * 60000) changes.push(`Departure now ${fmt(L.depBest, AP[f.from].tz, 'time')}`);
+    if (L.status !== old.status && (L.status === 'Canceled' || L.status === 'Diverted')) changes.push(`Flight ${L.status === 'Canceled' ? 'cancelled' : 'diverted'}`);
+  }
+  if (old.inbound) L.inbound = old.inbound;
+  if (!L.pos && old.pos && old.pos.src !== 'AeroDataBox') L.pos = old.pos;
+  f.live = L;
+  if (match.depS && match.arrS) {
+    const dl = localDateTime(match.depS, AP[f.from].tz), al = localDateTime(match.arrS, AP[f.to].tz);
+    Object.assign(f, { depDate: dl.date, depTime: dl.time, arrDate: al.date, arrTime: al.time });
+  }
+  ['depTerm', 'depGate', 'arrGate', 'belt'].forEach((k) => { if (L[k]) f[k] = L[k]; });
+  if (L.model && !f.aircraft) f.aircraft = L.model;
+  if (!f.airline && match.airline) f.airline = match.airline;
+  save();
+  return changes;
+}
+/* Where's my plane: this aircraft's flights around your departure */
+async function checkInbound(id) {
+  const f = db.flights.find((x) => x.id === id);
+  if (!f || !f.live || !f.live.reg) throw new Error('noreg');
+  const list = await adb(`/flights/reg/${encodeURIComponent(f.live.reg)}/${f.depDate}?withAircraftImage=false&withLocation=false&dateLocalRole=Both`);
+  const D = derive(f);
+  const legs = (Array.isArray(list) ? list : [list]).map((x) => {
+    const d = x.departure || {}, a = x.arrival || {};
+    const best = (m) => parseT(m.runwayTime) || parseT(m.revisedTime) || parseT(m.predictedTime) || parseT(m.scheduledTime);
+    return { no: x.number || '', from: (d.airport && (d.airport.iata || d.airport.icao)) || '?', to: (a.airport && (a.airport.iata || a.airport.icao)) || '?', status: x.status || '', depS: parseT(d.scheduledTime), depBest: best(d), arrS: parseT(a.scheduledTime), arrBest: best(a) };
+  }).filter((l) => l.depS && l.arrS);
+  const prev = legs.filter((l) => l.to === f.from && l.arrS <= D.depS).sort((a, b) => b.arrS - a.arrS)[0] || null;
+  const next = legs.filter((l) => l.from === f.to && l.depS >= D.arrS).sort((a, b) => a.depS - b.depS)[0] || null;
+  f.live.inbound = { prev, next, fetchedAt: Date.now() };
+  save();
+}
+/* Free live position from community ADS-B networks (no key). */
+async function fetchPosition(hex) {
+  const urls = [`https://api.adsb.lol/v2/icao/${hex}`, `https://api.airplanes.live/v2/hex/${hex}`];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const ac = (j.ac || j.aircraft || [])[0];
+      if (ac && ac.lat != null) return { lat: ac.lat, lon: ac.lon, altFt: typeof ac.alt_baro === 'number' ? ac.alt_baro : ac.alt_geom, gsKt: ac.gs, track: ac.track != null ? ac.track : ac.true_heading, at: Date.now(), src: u.includes('adsb.lol') ? 'adsb.lol' : 'airplanes.live', ground: ac.alt_baro === 'ground' };
+    } catch (e) { /* try the next source */ }
+  }
+  return null;
+}
+
 /* ---------- Flights ---------- */
 function derive(f) {
   const A = AP[f.from], B = AP[f.to];
   if (!A || !B) return null;
-  const dep = zonedToUtc(f.depDate, f.depTime, A.tz);
-  const arr = zonedToUtc(f.arrDate, f.arrTime, B.tz);
-  return Object.assign({}, f, { A, B, dep, arr, mi: gcMiles(A, B), dur: arr - dep });
+  const depS = zonedToUtc(f.depDate, f.depTime, A.tz);
+  const arrS = zonedToUtc(f.arrDate, f.arrTime, B.tz);
+  const L = f.live || null;
+  const dep = (L && L.depBest) || depS, arr = (L && L.arrBest) || arrS;
+  return Object.assign({}, f, { A, B, depS, arrS, dep, arr, live: L, mi: gcMiles(A, B), dur: arr - dep });
 }
 function flightsD() { return db.flights.map(derive).filter(Boolean); }
 function findD(id) { const f = db.flights.find((x) => x.id === id); return f ? derive(f) : null; }
+const lateStr = (min) => (min >= 60 ? `${Math.floor(min / 60)}h ${pad(min % 60)}m late` : `${min}m late`);
+const LIVE_WORD = { CheckIn: 'Check-in open', Boarding: 'Boarding', GateClosed: 'Gate closed' };
 function status(f, now = Date.now()) {
-  if (now < f.dep) return f.dep - now < 3 * 3600000 ? { key: 'soon', label: 'Departs soon', cls: 'amber' } : { key: 'sched', label: 'Scheduled', cls: 'grey' };
-  if (now < f.arr) return { key: 'air', label: 'In the air', cls: 'blue' };
-  return { key: 'landed', label: 'Landed', cls: 'green' };
+  const L = f.live, st = L && L.status;
+  if (st === 'Canceled' || st === 'CanceledUncertain') return { key: 'cancel', label: 'Cancelled', cls: 'red' };
+  if (st === 'Diverted') return { key: 'divert', label: 'Diverted', cls: 'red' };
+  const depLate = Math.round((f.dep - f.depS) / 60000), arrLate = Math.round((f.arr - f.arrS) / 60000);
+  const flying = st === 'Departed' || st === 'EnRoute' || st === 'Approaching';
+  if (st === 'Arrived' || now >= f.arr) return arrLate >= 5 ? { key: 'landed', label: `Landed ${lateStr(arrLate)}`, cls: 'amber' } : { key: 'landed', label: 'Landed', cls: 'green' };
+  if (flying || now >= f.dep) return { key: 'air', label: arrLate >= 5 ? `In the air · ${lateStr(arrLate)}` : 'In the air', cls: 'blue' };
+  const soon = f.dep - now < 3 * 3600000;
+  if (L) {
+    if (depLate >= 5) return { key: soon ? 'soon' : 'sched', label: lateStr(depLate), cls: 'amber' };
+    return { key: soon ? 'soon' : 'sched', label: (soon && LIVE_WORD[st]) || 'On time', cls: 'green' };
+  }
+  return soon ? { key: 'soon', label: 'Departs soon', cls: 'amber' } : { key: 'sched', label: 'Scheduled', cls: 'grey' };
 }
 const progress = (f, now = Date.now()) => Math.min(1, Math.max(0, (now - f.dep) / (f.arr - f.dep)));
 const prettyNo = (f) => (f.flightNo || '').replace(/^([A-Z0-9]{2})(\d)/, '$1 $2');
@@ -236,14 +362,26 @@ function drawRoutes(routes, opts = {}) {
   routes.forEach((r) => {
     const pts = gcPoints(r.a, r.b);
     pts.forEach((p) => bounds.push(p));
-    if (r.progress != null && r.progress > 0 && r.progress < 1) {
-      const k = Math.min(pts.length - 2, Math.max(1, Math.round(r.progress * (pts.length - 1))));
-      const flown = pts.slice(0, k + 1), rest = pts.slice(k);
+    if (r.pos || (r.progress != null && r.progress > 0 && r.progress < 1)) {
+      let k, here, brg;
+      if (r.pos) {
+        let best = Infinity;
+        pts.forEach((p, i) => { const dd = (p[0] - r.pos.lat) ** 2 + (p[1] - r.pos.lon) ** 2; if (dd < best) { best = dd; k = i; } });
+        k = Math.min(pts.length - 2, Math.max(1, k));
+        let lon = r.pos.lon; while (lon - pts[k][1] > 180) lon -= 360; while (lon - pts[k][1] < -180) lon += 360;
+        here = [r.pos.lat, lon];
+        brg = r.pos.track != null ? r.pos.track : bearing(pts[k - 1], pts[k + 1]);
+        bounds.push(here);
+      } else {
+        k = Math.min(pts.length - 2, Math.max(1, Math.round(r.progress * (pts.length - 1))));
+        here = pts[k];
+        brg = bearing(pts[k - 1], pts[k + 1]);
+      }
+      const flown = pts.slice(0, k).concat([here]), rest = [here].concat(pts.slice(k + 1));
       L.polyline(flown, { color: arc, weight: 9, opacity: 0.25, interactive: false }).addTo(layer);
       L.polyline(flown, { color: arc, weight: 2.6, opacity: 1, interactive: false }).addTo(layer);
       L.polyline(rest, { color: arc, weight: 2, opacity: 0.7, dashArray: '2 7', lineCap: 'round', interactive: false }).addTo(layer);
-      const brg = bearing(pts[k - 1], pts[k + 1]);
-      L.marker(pts[k], { icon: L.divIcon({ className: 'plane-icon', html: planeSVG(brg, plane), iconSize: [30, 30], iconAnchor: [15, 15] }), interactive: false, zIndexOffset: 1000 }).addTo(layer);
+      L.marker(here, { icon: L.divIcon({ className: 'plane-icon', html: planeSVG(brg, plane), iconSize: [30, 30], iconAnchor: [15, 15] }), interactive: false, zIndexOffset: 1000 }).addTo(layer);
     } else {
       L.polyline(pts, { color: arc, weight: 8, opacity: r.dim ? 0.06 : 0.22, interactive: false }).addTo(layer);
       L.polyline(pts, { color: r.dim ? dim : arc, weight: r.dim ? 1.6 : 2.4, opacity: 1, interactive: false }).addTo(layer);
@@ -327,6 +465,7 @@ function layout({ useMap = true, tabs = true, snapTo = 'half', left = '', right 
   $('#top-right').innerHTML = right;
   $$('#tabbar .tab').forEach((t) => { if (t.dataset.tab === tab) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current'); });
   mapRefresher = null;
+  if (posTimer) { clearInterval(posTimer); posTimer = null; }
   if (useMap) { initMap(); setSnap(snapTo, false); } else { sheet.classList.remove('anim'); sheet.style.transform = 'none'; }
   $('#content').scrollTop = 0;
 }
@@ -417,59 +556,126 @@ function dedupeRoutes(list) {
   return [...m.values()];
 }
 
+let posTimer = null;
+function timeHTML(best, sched, tz) {
+  const b = fmt(best, tz, 'time');
+  if (Math.abs(best - sched) < 60000) return `<b>${b}</b>`;
+  return `<s class="muted">${fmt(sched, tz, 'time')}</s> <b style="color:${best > sched ? 'var(--amber)' : 'var(--green)'}">${b}</b>`;
+}
+function liveLine(f) {
+  if (!f.flightNo || f.demo) return '';
+  if (!hasKey()) return `<div class="between" style="font-size:12px"><span class="muted">Live status is off</span><a href="#/settings" style="font-weight:700">Turn on in Settings</a></div>`;
+  const L = f.live;
+  const when = L && L.fetchedAt ? (L.notFound ? `Not found in live data · ${agoStr(Date.now() - L.fetchedAt)}` : `Live · updated ${agoStr(Date.now() - L.fetchedAt)}`) : 'Not checked yet';
+  return `<div class="between" style="font-size:12px"><span class="muted" id="live-when">${esc(when)}</span><button class="pill blue" style="border:none;min-height:32px" data-act="refresh" data-v="${esc(f.id)}">Refresh</button></div>`;
+}
+function freshPos(f) { const p = f.live && f.live.pos; return p && Date.now() - p.at < 20 * 60000 && !p.ground ? p : null; }
 function flightView(id) {
   const f = findD(id);
   if (!f) { location.hash = '#/'; return; }
   layout({ tabs: false, snapTo: 'half', left: `<a class="round" href="#/" aria-label="Back to flights">${ICON.back}</a>`, right: `<button class="round" data-act="fit" aria-label="Show whole route">${ICON.fit}</button><a class="round" href="#/edit/${esc(f.id)}" aria-label="Edit flight">${ICON.edit}</a>` });
-  const now = Date.now(), st = status(f, now), p = progress(f, now);
+  const now = Date.now(), st = status(f, now), p = progress(f, now), L = f.live || {};
+  const air = st.key === 'air', done = st.key === 'landed' || st.key === 'cancel' || st.key === 'divert';
+  const pos = air ? freshPos(f) : null;
   let cdLabel, cdVal, cdAttr = '', g2Label, g2Val, g3Label, g3Val;
-  if (st.key === 'air') { cdLabel = 'Lands in'; cdVal = cd(f.arr - now); cdAttr = `data-cd="${f.arr}"`; g2Label = 'Arr gate'; g2Val = gateStr(f.arrGate); g3Label = 'Bag belt'; g3Val = gateStr(f.belt).replace('TBA', '—'); }
-  else if (st.key === 'landed') { cdLabel = 'Landed'; cdVal = fmt(f.arr, f.B.tz, 'time'); g2Label = 'Arr gate'; g2Val = gateStr(f.arrGate); g3Label = 'Bag belt'; g3Val = gateStr(f.belt).replace('TBA', '—'); }
+  if (air) { cdLabel = 'Lands in'; cdVal = cd(f.arr - now); cdAttr = `data-cd="${f.arr}"`; g2Label = 'Arr gate'; g2Val = gateStr(f.arrGate); g3Label = 'Bag belt'; g3Val = gateStr(f.belt).replace('TBA', '—'); }
+  else if (done) { cdLabel = st.key === 'landed' ? 'Landed' : 'Status'; cdVal = st.key === 'landed' ? fmt(f.arr, f.B.tz, 'time') : (st.key === 'cancel' ? 'CXL' : 'DIV'); g2Label = 'Arr gate'; g2Val = gateStr(f.arrGate); g3Label = 'Bag belt'; g3Val = gateStr(f.belt).replace('TBA', '—'); }
   else { cdLabel = 'Departs in'; cdVal = cd(f.dep - now); cdAttr = `data-cd="${f.dep}"`; g2Label = 'Gate'; g2Val = gateStr(f.depGate); g3Label = 'Seat'; g3Val = f.seat ? String(f.seat).toUpperCase().slice(0, 4) : '—'; }
   const yourTime = (ts, tz) => (tz !== HOME_TZ && tzOffset(ts, tz) !== tzOffset(ts, HOME_TZ)) ? `<div class="muted" style="font-size:11px">${fmt(ts, HOME_TZ, 'time')} your time</div>` : '';
   $('#grab-content').innerHTML = `
-    <div class="stack" style="gap:16px;padding-bottom:6px">
+    <div class="stack" style="gap:14px;padding-bottom:6px">
       <div class="row"><div class="badge">${esc(codeOf(f))}</div>
-        <div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:700">${esc(titleOf(f))}</div><div class="muted" style="font-size:12px">${esc(f.A.city)} → ${esc(f.B.city)} · ${fmt(f.dep, f.A.tz, 'day')}</div></div>
+        <div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:700">${esc(titleOf(f))}</div><div class="muted" style="font-size:12px">${esc(f.A.city)} → ${esc(f.B.city)} · ${fmt(f.depS, f.A.tz, 'day')}</div></div>
         ${pill(st)}</div>
       <div class="between">
-        <div style="display:flex;flex-direction:column;gap:6px">${flap(f.from, 'md')}<div class="num" style="font-size:12px"><span class="muted">Departs</span> <b>${fmt(f.dep, f.A.tz, 'time')}</b></div>${yourTime(f.dep, f.A.tz)}</div>
+        <div style="display:flex;flex-direction:column;gap:6px">${flap(f.from, 'md')}<div class="num" style="font-size:12px"><span class="muted">Departs</span> ${timeHTML(f.dep, f.depS, f.A.tz)}</div>${yourTime(f.dep, f.A.tz)}</div>
         <span class="muted">${ICON.plane}</span>
-        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;text-align:right">${flap(f.to, 'md')}<div class="num" style="font-size:12px"><span class="muted">Arrives</span> <b>${fmt(f.arr, f.B.tz, 'time')}</b>${plusDays(f)}</div>${yourTime(f.arr, f.B.tz)}</div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;text-align:right">${flap(f.to, 'md')}<div class="num" style="font-size:12px"><span class="muted">Arrives</span> ${timeHTML(f.arr, f.arrS, f.B.tz)}${plusDays(f)}</div>${yourTime(f.arr, f.B.tz)}</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:6px">
-        <div class="bar"><i data-prog="${f.dep},${f.arr}" style="width:${(p * 100).toFixed(1)}%"></i>${st.key === 'air' ? `<b data-progdot="${f.dep},${f.arr}" style="left:${(p * 100).toFixed(1)}%"></b>` : ''}</div>
-        <div class="between muted num" style="font-size:12px"><span>${st.key === 'air' ? 'Estimated from schedule' : durStr(f.dur) + ' flight'}</span><span>${distStr(f.mi)}</span></div>
+        <div class="bar"><i data-prog="${f.dep},${f.arr}" style="width:${(p * 100).toFixed(1)}%"></i>${air ? `<b data-progdot="${f.dep},${f.arr}" style="left:${(p * 100).toFixed(1)}%"></b>` : ''}</div>
+        <div class="between muted num" style="font-size:12px"><span id="pos-src">${air ? (pos ? 'Live position · ' + esc(pos.src) : 'Estimated from schedule') : durStr(f.dur) + ' flight'}</span><span>${distStr(f.mi)}</span></div>
       </div>
       <div class="grid3">
         <div style="display:flex;flex-direction:column;gap:6px"><span class="lbl">${cdLabel}</span>${flap(cdVal, 'sm', cdAttr)}</div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:center"><span class="lbl">${g2Label}</span>${flap(g2Val, 'sm')}</div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end"><span class="lbl">${g3Label}</span>${flap(g3Val, 'sm')}</div>
       </div>
+      ${liveLine(f)}
     </div>`;
   const row = (k, v, sub = '') => `<span class="muted">${k}</span><span class="t1 num">${v}${sub ? `<div class="muted" style="font-size:11px;font-weight:500">${sub}</div>` : ''}</span>`;
-  const homeSub = (ts, tz) => (tz !== HOME_TZ && tzOffset(ts, tz) !== tzOffset(ts, HOME_TZ)) ? `${fmt(ts, HOME_TZ, 'time')} your time` : '';
+  const schedSub = (best, sched, tz) => (Math.abs(best - sched) >= 60000 ? `scheduled ${fmt(sched, tz, 'time')}` : '');
   const det = (k, v) => `<div class="stat"><span class="lbl">${k}</span><span class="big">${v ? esc(v) : '<span class="muted">—</span>'}</span></div>`;
   $('#content').innerHTML = `<div class="stack" style="padding-top:12px">
+    ${air ? `<div class="grid3" id="live-card">
+      <div class="stat"><span class="lbl">Altitude</span><span class="big num" id="lv-alt">${pos && pos.altFt ? nf.format(pos.altFt) + ' ft' : '—'}</span></div>
+      <div class="stat"><span class="lbl">Speed</span><span class="big num" id="lv-gs" style="font-size:14px">${pos && pos.gsKt ? speedStr(pos.gsKt * 1.15078) : '—'}</span></div>
+      <div class="stat"><span class="lbl">Heading</span><span class="big num" id="lv-trk">${pos && pos.track != null ? Math.round(pos.track) + '°' : '—'}</span></div></div>` : ''}
     <div class="card"><h2>Timeline</h2>
-      <div class="tl">${row('Departure · ' + f.from, fmt(f.dep, f.A.tz, 'day') + ' ' + fmt(f.dep, f.A.tz, 'time'), homeSub(f.dep, f.A.tz))}
-      ${row('Arrival · ' + f.to, fmt(f.arr, f.B.tz, 'day') + ' ' + fmt(f.arr, f.B.tz, 'time'), homeSub(f.arr, f.B.tz))}
+      <div class="tl">${row('Departure · ' + f.from, fmt(f.dep, f.A.tz, 'day') + ' ' + fmt(f.dep, f.A.tz, 'time'), schedSub(f.dep, f.depS, f.A.tz))}
+      ${row('Arrival · ' + f.to, fmt(f.arr, f.B.tz, 'day') + ' ' + fmt(f.arr, f.B.tz, 'time'), schedSub(f.arr, f.arrS, f.B.tz))}
       ${row('Flight time', durStr(f.dur))}
-      ${st.key === 'landed' ? row('Landed', agoStr(now - f.arr)) : ''}</div>
+      ${st.key === 'landed' ? row('Landed', agoStr(now - f.arr)) : ''}
+      ${L.checkIn ? row('Check-in desk', esc(L.checkIn)) : ''}</div>
       <div class="note">${esc(offsetDiffStr(f))}. Times are local to each airport.</div></div>
-    <div class="card"><div class="between"><h2>Where's my plane?</h2><span class="pill grey">Live data</span></div>
-      <div class="note">Coming with live flight data in the next update: it will show where this plane is now, its previous flight, and whether a delay is heading your way.</div></div>
+    ${planeCard(f, st)}
     <div class="grid2">
       <div class="stat"><span class="lbl">Distance</span><span class="big num" style="font-size:16px">${distStr(f.mi)}</span></div>
       <div class="stat"><span class="lbl">Avg speed</span><span class="big num" style="font-size:16px">${speedStr(f.mi / (f.dur / 3600000))}</span></div>
     </div>
     <div class="card"><div class="between"><h2>Details</h2><a href="#/edit/${esc(f.id)}" style="font-size:14px;font-weight:700">Edit</a></div>
-      <div class="grid3">${det('Terminal', f.depTerm)}${det('Gate', f.depGate)}${det('Seat', f.seat)}${det('Arr gate', f.arrGate)}${det('Bag belt', f.belt)}${det('Aircraft', f.aircraft)}</div></div>
+      <div class="grid3">${det('Terminal', f.depTerm)}${det('Gate', f.depGate)}${det('Seat', f.seat)}${det('Arr gate', f.arrGate)}${det('Bag belt', f.belt)}${det('Aircraft', f.aircraft)}</div>
+      ${L.reg ? `<div class="note">Plane ${esc(L.reg)}${L.model ? ' · ' + esc(L.model) : ''}</div>` : ''}</div>
     <button class="btn danger" data-act="del" data-v="${esc(f.id)}">Delete flight</button>
   </div>`;
-  drawRoutes([{ a: f.A, b: f.B, progress: st.key === 'air' ? p : null }]);
-  if (st.key !== 'landed') mapRefresher = () => { const g = findD(id); if (g) drawRoutes([{ a: g.A, b: g.B, progress: status(g).key === 'air' ? progress(g) : null }], { fit: false }); };
+  const routeNow = (g) => { const s2 = status(g), fp = s2.key === 'air' ? freshPos(g) : null; return [{ a: g.A, b: g.B, pos: fp, progress: s2.key === 'air' && !fp ? progress(g) : null }]; };
+  drawRoutes(routeNow(f));
+  if (!done) mapRefresher = () => { const g = findD(id); if (g) drawRoutes(routeNow(g), { fit: false }); };
+  if (air && L.modeS) {
+    const poll = async () => {
+      const got = await fetchPosition(L.modeS);
+      const rec = db.flights.find((x) => x.id === id);
+      if (!got || !rec || !location.hash.includes(id)) return;
+      rec.live = Object.assign({}, rec.live, { pos: got }); save();
+      const g = findD(id);
+      drawRoutes(routeNow(g), { fit: false });
+      const set = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
+      set('#lv-alt', got.altFt ? nf.format(got.altFt) + ' ft' : '—');
+      set('#lv-gs', got.gsKt ? speedStr(got.gsKt * 1.15078) : '—');
+      set('#lv-trk', got.track != null ? Math.round(got.track) + '°' : '—');
+      set('#pos-src', 'Live position · ' + got.src);
+    };
+    poll();
+    posTimer = setInterval(poll, 30000);
+  }
 }
+function planeCard(f, st) {
+  const L = f.live || {};
+  const head = `<div class="between"><h2>Where's my plane?</h2>${L.reg ? `<span class="pill grey">${esc(L.reg)}</span>` : ''}</div>`;
+  if (!f.flightNo) return `<div class="card">${head}<div class="note">Add the flight number to use this.</div></div>`;
+  if (!hasKey()) return `<div class="card">${head}<div class="note">Turn on live data in <a href="#/settings">Settings</a> to see which plane is flying your route, where it is now, and whether its earlier flight is running late.</div></div>`;
+  if (!L.reg) return `<div class="card">${head}<div class="note">Airlines usually assign the plane a day or so before departure. Check back closer to the time — it appears here after a refresh.</div></div>`;
+  const ib = L.inbound;
+  const btn = st.key === 'sched' || st.key === 'soon' ? `<button class="btn ghost" data-act="inbound" data-v="${esc(f.id)}">${ib ? 'Check again' : 'Check the inbound plane'} <span class="muted" style="font-weight:500">· uses 1 lookup</span></button>` : '';
+  if (!ib) return `<div class="card">${head}<div class="note">${L.model ? esc(L.model) + '. ' : ''}See this plane's flight before yours and whether a delay is coming your way.</div>${btn}</div>`;
+  const legRow = (l, label, me) => {
+    if (!l) return '';
+    const late = l.arrBest && l.arrS ? Math.round((l.arrBest - l.arrS) / 60000) : 0;
+    const dotC = me ? 'var(--blue)' : (late >= 10 ? 'var(--amber)' : 'var(--muted)');
+    const stTxt = me ? 'Your flight' : (l.status === 'Arrived' ? `Landed ${l.arrBest ? fmtAny(l.arrBest, f.from) : ''}` : (l.status || '')) + (late >= 5 && !me ? ` · ${lateStr(late)}` : '');
+    return `<div class="row" style="align-items:flex-start"><span style="width:12px;height:12px;border-radius:6px;background:${dotC};margin-top:4px;flex-shrink:0"></span><div style="flex:1;min-width:0"><div class="between" style="font-size:14px"><b>${esc(l.from)} → ${esc(l.to)}</b><span class="muted" style="font-size:12px">${esc(l.no)}</span></div><div class="note">${esc(label)} · ${esc(stTxt)}</div></div></div>`;
+  };
+  const me = { from: f.from, to: f.to, no: prettyNo(f), status: '' };
+  let msg = '';
+  if (ib.prev) {
+    const landBy = ib.prev.arrBest || ib.prev.arrS;
+    const gap = Math.round((f.dep - landBy) / 60000);
+    msg = f.dep <= Date.now() ? `The plane landed ${durStr(Math.max(0, gap) * 60000)} before your flight left.` : (gap < 35 ? `The plane is due in only ${Math.max(0, gap)} min before your departure — your flight may be delayed.` : `The plane should be on the ground ${durStr(gap * 60000)} before you leave.`);
+  } else msg = "No earlier flight found for this plane today — it may be starting its day with your flight.";
+  return `<div class="card">${head}<div class="stack" style="gap:10px">${legRow(ib.prev, "Plane's previous flight")}${legRow(me, 'Now', true)}${legRow(ib.next, 'Its next flight')}</div>
+    <div class="notice">${esc(msg)}</div><div class="note">Checked ${agoStr(Date.now() - ib.fetchedAt)}.</div>${btn}</div>`;
+}
+const fmtAny = (ts, code) => (AP[code] ? fmt(ts, AP[code].tz, 'time') : '');
 
 function formView(id, pastMode) {
   const existing = id ? db.flights.find((x) => x.id === id) : null;
@@ -486,6 +692,7 @@ function formView(id, pastMode) {
       <div class="field"><label for="f-no">Flight number</label><input id="f-no" class="code" value="${v('flightNo')}" placeholder="PC1172" inputmode="text" autocapitalize="characters"></div>
       <div class="field"><label for="f-al">Airline</label><input id="f-al" value="${v('airline')}" placeholder="Auto from number"></div>
     </div>
+    ${hasKey() ? `<div class="stack" style="gap:8px"><button type="button" class="btn ghost" id="f-look">Look up flight number + date <span class="muted" style="font-weight:500">· 1 lookup</span></button><div id="f-found"></div></div>` : ''}
     <div class="grid2">
       <div class="field"><label for="f-from">From</label><input id="f-from" class="code" list="aplist" value="${v('from')}" placeholder="LHR" maxlength="3" autocapitalize="characters"><span class="hint" id="h-from">&nbsp;</span></div>
       <div class="field"><label for="f-to">To</label><input id="f-to" class="code" list="aplist" value="${v('to')}" placeholder="IST" maxlength="3" autocapitalize="characters"><span class="hint" id="h-to">&nbsp;</span></div>
@@ -511,10 +718,38 @@ function formView(id, pastMode) {
       </div></details>
     <div class="hint err" id="f-err" role="alert" style="font-size:13px;color:var(--red)"></div>
     <button class="btn" type="submit" id="f-save">${existing ? 'Save changes' : (mode === 'past' ? 'Add to Passport' : 'Add to My Flights')}</button>
-    <div class="note" style="text-align:center">Copy the times from your booking for now. Searching by flight number arrives with live data in the next update.</div>
+    <div class="note" style="text-align:center">${hasKey() ? 'Type the flight number and date, then Look up — or fill everything in yourself.' : 'Copy the times from your booking, or turn on live data in Settings to look flights up by number.'}</div>
   </form>`;
   const form = $('#ff'), q = (s) => $(s, form);
-  let arrTouched = !!existing;
+  let arrTouched = !!existing, pendingLive = null;
+  const look = q('#f-look');
+  if (look) look.addEventListener('click', async () => {
+    const no = q('#f-no').value.trim().toUpperCase(), date = q('#f-dd').value, box = q('#f-found');
+    if (!no || !date) { box.innerHTML = '<div class="note" style="color:var(--red)">Type the flight number and departure date first.</div>'; return; }
+    look.disabled = true; box.innerHTML = '<div class="note">Looking up…</div>';
+    try {
+      const list = await adb(`/flights/number/${encodeURIComponent(no)}/${date}?withAircraftImage=false&withLocation=false&dateLocalRole=Departure`);
+      const found = (Array.isArray(list) ? list : [list]).map(fromAdb).filter((m) => m.from && m.to && m.depS && m.arrS);
+      if (!found.length) { box.innerHTML = `<div class="note">No flight ${esc(no)} found on that date. Check the number and date, or fill it in yourself.</div>`; return; }
+      box.innerHTML = `<div class="note" style="color:var(--green);font-weight:700">✓ Found ${found.length === 1 ? '1 flight' : found.length + ' legs — pick yours'}</div>` + found.map((m, i) => `<button type="button" class="list-row" data-pick="${i}" style="width:100%;border:none;text-align:left"><div style="flex:1"><div style="font-size:15px;font-weight:800">${m.from} → ${m.to}</div><div class="muted" style="font-size:12px">${esc(AP[m.from].city)} ${fmt(m.depS, AP[m.from].tz, 'time')} → ${esc(AP[m.to].city)} ${fmt(m.arrS, AP[m.to].tz, 'time')} · ${esc(m.live.status)}</div></div><span class="pill blue">Use</span></button>`).join('');
+      $$('[data-pick]', box).forEach((b) => b.addEventListener('click', () => {
+        const m = found[+b.dataset.pick];
+        const dl = localDateTime(m.depS, AP[m.from].tz), al = localDateTime(m.arrS, AP[m.to].tz);
+        q('#f-from').value = m.from; q('#f-to').value = m.to;
+        q('#f-dd').value = dl.date; q('#f-dt').value = dl.time; q('#f-ad').value = al.date; q('#f-at').value = al.time;
+        if (m.airline) { q('#f-al').value = m.airline; q('#f-al').dataset.auto = '0'; }
+        if (m.live.depTerm) q('#f-term').value = m.live.depTerm;
+        if (m.live.depGate) q('#f-gate').value = m.live.depGate;
+        if (m.live.arrGate) q('#f-agate').value = m.live.arrGate;
+        if (m.live.belt) q('#f-belt').value = m.live.belt;
+        if (m.live.model) q('#f-ac').value = m.live.model;
+        arrTouched = true; pendingLive = m.live;
+        box.innerHTML = `<div class="note" style="color:var(--green);font-weight:700">✓ Filled in ${m.from} → ${m.to}. Check it over, then save.</div>`;
+        upd();
+      }));
+    } catch (e) { box.innerHTML = `<div class="note" style="color:var(--red)">${esc(errText(e))}</div>`; }
+    finally { look.disabled = false; }
+  });
   q('#f-ad').addEventListener('input', () => { arrTouched = true; });
   $$('[data-mode]', form).forEach((b) => b.addEventListener('click', () => {
     mode = b.dataset.mode;
@@ -575,6 +810,7 @@ function formView(id, pastMode) {
       arrGate: q('#f-agate').value.trim(), belt: q('#f-belt').value.trim(), aircraft: q('#f-ac').value.trim(),
       demo: false, created: existing ? existing.created : Date.now()
     };
+    if (pendingLive) rec.live = pendingLive; else if (existing && existing.live && existing.flightNo === rec.flightNo && existing.depDate === rec.depDate) rec.live = existing.live;
     if (!AP[rec.from]) return err('Pick a known departure airport (3-letter code).');
     if (!AP[rec.to]) return err('Pick a known arrival airport (3-letter code).');
     if (rec.from === rec.to) return err('Departure and arrival airports are the same.');
@@ -650,8 +886,18 @@ function settingsView() {
     <div class="card" style="gap:2px"><h2 style="margin-bottom:6px">Alerts</h2>
       ${alerts.map(([k, l, d]) => `<div class="setrow"><div style="flex:1"><div style="font-size:14px;font-weight:700">${l}</div><div class="note">${d}</div></div><button class="switch" role="switch" aria-label="${l}" aria-checked="${!!s.alerts[k]}" data-act="alert" data-v="${k}"></button></div>`).join('')}
       <div class="notice" style="margin-top:10px">Alerts switch on in a later update — your choices are saved now. They will need the app installed on your home screen.</div></div>
-    <div class="card"><div class="between"><h2>Live flight data</h2><span class="pill grey">Next update</span></div>
-      <div class="note">Next, you'll paste your own free flight-data key here (it stays on this phone). That unlocks search by flight number, live status and delays, gate changes, the live plane on the map and "Where's my plane?".</div></div>
+    <div class="card"><div class="between"><h2>Live flight data</h2>${hasKey() ? '<span class="pill green">On</span>' : '<span class="pill grey">Off</span>'}</div>
+      ${hasKey() ? `<div class="note">Your AeroDataBox key is saved on this phone only.</div>
+        <div class="grid2"><button class="btn ghost" data-act="testKey">Test key</button><button class="btn ghost" data-act="removeKey">Remove key</button></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div class="between" style="font-size:13px"><span class="muted">Lookups this month (approx.)</span><b>${Math.round(unitsUsed() / UNITS_PER_LOOKUP)} of ${FREE_UNITS / UNITS_PER_LOOKUP}</b></div>
+        <div class="bar"><i style="width:${Math.min(100, unitsUsed() / FREE_UNITS * 100).toFixed(0)}%"></i></div></div>
+        <div class="setrow" style="border-top:none"><div style="flex:1"><div style="font-size:14px;font-weight:700">Auto-refresh</div><div class="note">While the app is open: every 30 min in the 6 hours before departure, every 15 min in the last 3 hours and in the air. Pauses at ${AUTO_STOP_AT / UNITS_PER_LOOKUP} lookups.</div></div><button class="switch" role="switch" aria-label="Auto-refresh" aria-checked="${!!s.autoRefresh}" data-act="autoRefresh"></button></div>
+        <div class="note">Plane positions on the map come free from adsb.lol / airplanes.live and don't use lookups.</div>`
+      : `<div class="note">Turns on: look up flights by number, live delays and gate changes, the real plane on the map, and "Where's my plane?".</div>
+        <ol class="note" style="margin:0;padding-left:18px;line-height:1.6"><li>Go to <a href="https://rapidapi.com" target="_blank" rel="noopener">rapidapi.com</a>, sign up, and search for <b>AeroDataBox</b>.</li><li>Subscribe to the free <b>Basic</b> plan (about 200 lookups a month).</li><li>Copy your <b>X-RapidAPI-Key</b> and paste it below.</li></ol>
+        <div class="field"><label for="key">Your key</label><input id="key" type="password" autocomplete="off" placeholder="Paste key"></div>
+        <button class="btn" data-act="saveKey">Save key</button>
+        <div class="note">It stays on this phone only and is sent only to RapidAPI.</div>`}</div>
     <div class="card"><h2>Your data</h2>
       <div class="note">Your flights are saved on this phone only (${db.flights.length} flight${db.flights.length === 1 ? '' : 's'}). Back them up now and then — clearing the browser or changing phones would lose them.</div>
       <div class="grid2"><button class="btn ghost" data-act="export">Export backup</button><button class="btn ghost" data-act="import">Import backup</button></div>
@@ -671,6 +917,32 @@ const ACT = {
   theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); settingsView(); },
   alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); },
   fit: () => { if (lastRoutes) drawRoutes(lastRoutes); },
+  refresh: async (el, v) => {
+    el.disabled = true; el.textContent = 'Checking…';
+    try { const ch = await refreshFlight(v); toast(ch.length ? ch.join(' · ') : 'Up to date'); }
+    catch (e) { toast(e.message === 'nonumber' ? 'Add a flight number first' : errText(e)); }
+    route();
+  },
+  inbound: async (el, v) => {
+    el.disabled = true; el.textContent = 'Checking…';
+    try { await checkInbound(v); } catch (e) { toast(errText(e)); }
+    route();
+  },
+  saveKey: () => {
+    const k = ($('#key').value || '').trim();
+    if (!k) return toast('Paste your key first');
+    db.settings.apiKey = k; save(); toast('Key saved on this phone'); settingsView();
+  },
+  removeKey: () => { db.settings.apiKey = ''; save(); toast('Key removed'); settingsView(); },
+  testKey: async (el) => {
+    el.disabled = true; el.textContent = 'Testing…';
+    try {
+      const res = await fetch(`https://${ADB_HOST}/health/services/feeds/FlightSchedules`, { headers: { 'x-rapidapi-key': db.settings.apiKey.trim(), 'x-rapidapi-host': ADB_HOST } });
+      toast(res.ok ? 'Key works ✓' : (res.status === 401 || res.status === 403 ? ERR_TEXT.badkey : `Service answered ${res.status}`));
+    } catch (e) { toast(errText(e)); }
+    el.disabled = false; el.textContent = 'Test key';
+  },
+  autoRefresh: (el) => { db.settings.autoRefresh = !db.settings.autoRefresh; save(); el.setAttribute('aria-checked', String(db.settings.autoRefresh)); },
   demo: () => { addDemo(); toast('Demo flights added — remove them any time in Settings'); route(); },
   removeDemo: () => { db.flights = db.flights.filter((f) => !f.demo); save(); toast('Demo flights removed'); settingsView(); },
   export: () => {
@@ -748,7 +1020,27 @@ function route() {
     $('#content').innerHTML = `<div class="card" style="margin-top:12px"><h2>Something went wrong</h2><div class="note">${esc(err.message)}</div><a class="btn ghost" href="#/">Back to My Flights</a></div>`;
   }
 }
+let refreshing = false;
+async function autoRefreshTick() {
+  if (refreshing || !hasKey() || !db.settings.autoRefresh || unitsUsed() >= AUTO_STOP_AT || navigator.onLine === false || document.hidden) return;
+  const now = Date.now();
+  const due = flightsD().filter((f) => f.flightNo && !f.demo && now >= f.dep - 6 * 3600000 && now <= f.arr + 90 * 60000).find((f) => {
+    const st = status(f, now);
+    if (st.key === 'cancel' || st.key === 'divert') return false;
+    const every = (st.key === 'air' || f.dep - now < 3 * 3600000) ? 15 * 60000 : 30 * 60000;
+    return !(f.live && f.live.fetchedAt) || now - f.live.fetchedAt >= every;
+  });
+  if (!due) return;
+  refreshing = true;
+  try {
+    const ch = await refreshFlight(due.id);
+    if (ch.length) toast(`${due.from}→${due.to}: ${ch.join(' · ')}`);
+    if (!$('#ff')) route();
+  } catch (e) { /* stay quiet; manual Refresh shows errors */ }
+  refreshing = false;
+}
 function tick() {
+  autoRefreshTick();
   const now = Date.now();
   let rerender = false;
   $$('[data-cd]').forEach((el) => {
@@ -766,6 +1058,7 @@ window.addEventListener('hashchange', route);
 
 applyTheme();
 route();
+setTimeout(autoRefreshTick, 1500);
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-window.__samflyer = { db: () => db, AP, zonedToUtc, gcMiles };
+window.__samflyer = { db: () => db, AP, zonedToUtc, gcMiles, checkInbound, route };
 })();
