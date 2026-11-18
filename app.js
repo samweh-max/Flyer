@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.10';
+const VERSION = '1.11';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -431,7 +431,7 @@ function buildStyle() {
     { id: 'ap-hit', type: 'circle', source: 'aps', paint: { 'circle-radius': 18, 'circle-color': '#000', 'circle-opacity': 0.01 } },
     { id: 'ap-lbl', type: 'symbol', source: 'aps', layout: { 'text-field': ['get', 'code'], 'text-font': ['Noto Sans Bold'], 'text-size': ['case', ['==', ['get', 'pri'], 0], 11.5, 10.5], 'text-variable-anchor': ['left', 'right', 'top', 'bottom'], 'text-radial-offset': 0.75, 'text-justify': 'auto', 'text-allow-overlap': false, 'text-optional': true, 'text-padding': 3, 'symbol-sort-key': ['get', 'pri'], 'text-letter-spacing': 0.06 },
       paint: { 'text-color': onImage ? '#FFFFFF' : (dark ? '#CFE3FF' : '#18324F'), 'text-halo-color': onImage ? 'rgba(0,0,0,0.75)' : halo, 'text-halo-width': 1.3,
-        'text-opacity': ['case', ['==', ['get', 'pri'], 0], 1, ['interpolate', ['linear'], ['zoom'], 1.8, 0, 2.4, 0.9]] } }
+        'text-opacity': ['interpolate', ['linear'], ['zoom'], 1.8, ['case', ['==', ['get', 'pri'], 0], 1, 0], 2.4, ['case', ['==', ['get', 'pri'], 0], 1, 0.9]] } }
   );
   return {
     version: 8, projection: { type: 'globe' },
