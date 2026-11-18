@@ -16,17 +16,17 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.23.0/dist/maplibre-gl.css">
 <style>
-:root{--safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px);--sheet-w:560px;--tab-h:64px}
+:root{--st:env(safe-area-inset-top,0px);--safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px);--sheet-w:560px;--tab-h:64px}
 [data-theme=dark]{--space:#02040A;--water:#0B1220;--sheet:rgba(20,20,26,.86);--sheet-solid:#14141A;--page:#0B0B0F;--card:rgba(255,255,255,.07);--card-solid:#17171C;--text:#F5F5F7;--muted:#A3A3AE;--line:rgba(255,255,255,.12);--amber:#FFB020;--amber-bg:rgba(255,176,32,.15);--green:#3DDC6A;--green-bg:rgba(61,220,106,.14);--blue:#5EC8FF;--blue-bg:rgba(94,200,255,.15);--on-blue:#0B1220;--handle:rgba(255,255,255,.3);--arc:#5EC8FF;--arc-dim:rgba(94,200,255,.45);--label:#CFE3FF;--plane:#FFFFFF;--red:#FF6B5E;--red-bg:rgba(255,107,94,.15)}
 [data-theme=light]{--space:#E6ECF4;--water:#CFE0F2;--sheet:rgba(255,255,255,.9);--sheet-solid:#FFFFFF;--page:#F2F2F5;--card:rgba(0,0,0,.045);--card-solid:#FFFFFF;--text:#111114;--muted:#5A5A64;--line:rgba(0,0,0,.12);--amber:#8A5300;--amber-bg:rgba(200,120,0,.14);--green:#1B7F35;--green-bg:rgba(27,127,53,.12);--blue:#1E6FD9;--blue-bg:rgba(30,111,217,.12);--on-blue:#FFFFFF;--handle:rgba(0,0,0,.25);--arc:#1E6FD9;--arc-dim:rgba(30,111,217,.5);--label:#18324F;--plane:#0E1A2B;--red:#B3261E;--red-bg:rgba(179,38,30,.1)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;overflow:hidden;background:var(--space);color:var(--text);font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+html,body{margin:0;min-height:100vh;overflow:hidden;background:var(--sheet-solid);color:var(--text);font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 button,input,select{font-family:inherit;font-size:inherit;color:inherit}
 button{cursor:pointer}
 a{color:var(--blue)}
 .mono{font-family:"Space Mono",ui-monospace,Menlo,monospace}
 .num{font-variant-numeric:tabular-nums}
-#app{position:fixed;left:0;top:0;width:100%;height:var(--app-h,100%);overflow:hidden}
+#app{position:fixed;left:0;top:0;width:100%;height:100vh;height:var(--app-h,100vh);overflow:hidden}
 #map{position:absolute;inset:0;background:var(--space);z-index:0}
 #map-fallback{position:absolute;left:0;right:0;top:calc(var(--safe-top) + 120px);text-align:center;color:var(--muted);font-size:13px;z-index:1;display:none}
 body.no-map #map,body.no-map #map-fallback,body.no-map #topbar{display:none}
@@ -44,7 +44,9 @@ body.no-map{background:var(--page)}
 #sheet{position:absolute;z-index:10;left:0;right:0;margin:0 auto;max-width:var(--sheet-w);bottom:0;height:calc(100% - var(--safe-top) - 64px);background:var(--sheet);-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px);border-radius:28px 28px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.25);display:flex;flex-direction:column;transform:translateY(40%);will-change:transform}
 #sheet.anim{transition:transform .32s cubic-bezier(.2,.8,.2,1)}
 body.no-map #sheet{height:100%;border-radius:0;background:var(--page);box-shadow:none;max-width:none;-webkit-backdrop-filter:none;backdrop-filter:none}
-.grab{padding:10px 20px 0;touch-action:none;cursor:grab;flex-shrink:0}
+.credit{position:absolute;right:16px;top:8px;font-size:9px;color:var(--muted);opacity:.7;pointer-events:none}
+body.no-map .credit{display:none}
+.grab{position:relative;padding:10px 20px 0;touch-action:none;cursor:grab;flex-shrink:0}
 .handle{width:40px;height:5px;border-radius:3px;background:var(--handle);margin:0 auto 10px}
 body.no-map .handle{display:none}
 #content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:4px 20px calc(var(--off,0px) + var(--tab-h) + var(--safe-bottom) + 28px)}
@@ -185,7 +187,7 @@ button,a,.tab,.seg,.chips,.flap,.pill,.grab{-webkit-user-select:none;user-select
 <div id="map-fallback">Map needs an internet connection</div>
 <div id="topbar"><div id="top-left"></div><div id="top-right"></div></div>
 <section id="sheet" aria-label="Details">
-  <div class="grab" id="grab"><div class="handle"></div><div id="grab-content"></div></div>
+  <div class="grab" id="grab"><div class="handle"></div><span class="credit" id="credit">© OpenStreetMap · OpenFreeMap · NASA</span><div id="grab-content"></div></div>
   <div id="content"></div>
 </section>
 <nav id="tabbar" aria-label="Main">

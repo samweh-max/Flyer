@@ -1,5 +1,5 @@
 // Samflyer service worker: keeps the app working offline.
-const CACHE = 'samflyer-v1.4';
+const CACHE = 'samflyer-v1.6';
 const SHELL = ['./', 'index.html', 'app.js', 'data.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -15,7 +15,7 @@ self.addEventListener('fetch', (e) => {
   if (url.hostname.endsWith('openfreemap.org') || url.hostname.endsWith('earthdata.nasa.gov')) return;
   // App files: network first so updates arrive, cache as fallback for offline.
   if (url.origin === location.origin) {
-    e.respondWith(fetch(req).then((res) => {
+    e.respondWith(fetch(req, { cache: 'no-cache' }).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(req, copy));
       return res;

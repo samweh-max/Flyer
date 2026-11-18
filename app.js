@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.4';
+const VERSION = '1.6';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -357,7 +357,7 @@ function buildStyle() {
     layers.push({ id: 'borders', type: 'line', source: 'omt', 'source-layer': 'boundary', filter: ['all', ['==', ['get', 'admin_level'], 2], ['!=', ['get', 'maritime'], 1]], paint: { 'line-color': dark ? '#2F3B57' : '#C4BCAD', 'line-width': 0.8 } });
   } else {
     layers.push({ id: 'bg', type: 'background', paint: { 'background-color': mode === 'night' ? '#02040A' : '#0A2A4A' } });
-    sources.sat = { type: 'raster', tiles: [mode === 'night' ? GIBS('VIIRS_Black_Marble', 'png') : GIBS('BlueMarble_NextGeneration', 'jpeg')], tileSize: 256, minzoom: 1, maxzoom: 8, attribution: 'Imagery © NASA EOSDIS GIBS' };
+    sources.sat = { type: 'raster', tiles: [mode === 'night' ? GIBS('VIIRS_Black_Marble', 'png') : GIBS('BlueMarble_NextGeneration', 'jpeg')], tileSize: 256, minzoom: 1, maxzoom: 8 };
     layers.push({ id: 'sat', type: 'raster', source: 'sat', paint: { 'raster-fade-duration': 200 } });
     if (mode === 'night') layers.push({ id: 'borders', type: 'line', source: 'omt', 'source-layer': 'boundary', filter: ['all', ['==', ['get', 'admin_level'], 2], ['!=', ['get', 'maritime'], 1]], paint: { 'line-color': 'rgba(150,180,220,0.25)', 'line-width': 0.7 } });
   }
@@ -388,7 +388,6 @@ function initMap() {
     map = new maplibregl.Map({ container: 'map', style: buildStyle(), center: [10, 45], zoom: 1.1, minZoom: 0, maxZoom: 9, attributionControl: false, pitchWithRotate: false, dragRotate: false, fadeDuration: 150 });
   } catch (e) { map = null; $('#map-fallback').textContent = "This phone can't draw the 3D map"; $('#map-fallback').style.display = 'block'; return; }
   styleKey = globeMode() + currentTheme();
-  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© OpenStreetMap · OpenFreeMap · NASA GIBS' }), 'top-right');
   if (map.touchZoomRotate && map.touchZoomRotate.disableRotation) map.touchZoomRotate.disableRotation();
   map.on('load', () => { mapReady = true; if (lastRoutes) drawRoutes(lastRoutes.routes); });
   map.on('error', (e) => {
@@ -455,10 +454,11 @@ function fitTo(bounds) {
   if (!map || !mapReady) return;
   if (snap === 'full' && !document.body.classList.contains('no-map')) return;
   const H = appH(), W = appEl.offsetWidth || window.innerWidth;
-  const top = 64, bottom = Math.max(24, Math.min(visibleSheet() + 12, H - top - 160));
+  const safeTop = safeTopPx();
+  const top = Math.max(64, safeTop + 56), bottom = Math.max(24, Math.min(visibleSheet() + 12, H - top - 160));
   const duration = reduceMotion() ? 0 : 900;
   map.resize();
-  const globeZoom = () => { const D = Math.max(160, Math.min(W - 40, H - top - bottom - 24)); return Math.log2(D * Math.PI / 512); };
+  const globeZoom = () => { const D = Math.max(160, Math.min(W - 64, H - top - bottom - 40)); return Math.log2(D * Math.PI / 512); };
   if (!bounds.length) { map.easeTo({ center: [10, 45], zoom: globeZoom(), padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
   let minLat = 90, maxLat = -90, minLon = 1e9, maxLon = -1e9;
   bounds.forEach(([la, lo]) => { minLat = Math.min(minLat, la); maxLat = Math.max(maxLat, la); minLon = Math.min(minLon, lo); maxLon = Math.max(maxLon, lo); });
@@ -469,12 +469,31 @@ function fitTo(bounds) {
 
 /* ---------- Screen size (iPhone home-screen apps report a short height) ---------- */
 const appEl = $('#app');
+const isStandalone = () => navigator.standalone === true || (window.matchMedia && (window.matchMedia('(display-mode: standalone)').matches || window.matchMedia('(display-mode: fullscreen)').matches));
+function cssHeight(unit) {
+  const p = document.createElement('div');
+  p.style.cssText = `position:fixed;top:0;left:0;width:1px;height:100${unit};visibility:hidden;pointer-events:none`;
+  document.body.appendChild(p);
+  const h = p.offsetHeight; p.remove(); return h;
+}
+function safeTopPx() {
+  const p = document.createElement('div');
+  p.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:env(safe-area-inset-top,0px);visibility:hidden';
+  document.body.appendChild(p); const h = p.offsetHeight; p.remove(); return h;
+}
 function setAppHeight() {
-  let h = window.innerHeight;
-  if (navigator.standalone === true) {
-    const portrait = window.matchMedia('(orientation: portrait)').matches;
-    const sh = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width);
-    if (sh > h) h = sh;
+  const inner = Math.max(window.innerHeight, document.documentElement.clientHeight);
+  const vh = cssHeight('vh');
+  let h = inner;
+  // Home-screen apps on iPhone can report a height that is short by the status bar.
+  // Other apps of Samer's use 100vh and fill the screen, so trust 100vh whenever there is no browser toolbar in the way.
+  if (isStandalone() || (vh > inner && vh - inner < 90)) {
+    h = Math.max(inner, vh);
+    if (isStandalone()) {
+      const portrait = window.matchMedia('(orientation: portrait)').matches;
+      const sh = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width);
+      h = Math.max(h, sh);
+    }
   }
   document.documentElement.style.setProperty('--app-h', h + 'px');
 }
@@ -1242,6 +1261,11 @@ window.addEventListener('hashchange', route);
 applyTheme();
 route();
 setTimeout(autoRefreshTick, 1500);
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
+}
 window.__samflyer = { db: () => db, AP, zonedToUtc, gcMiles, checkInbound, route };
 })();
