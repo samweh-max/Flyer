@@ -199,11 +199,14 @@ CUN|Cancún|Cancún|MX|21.0365|-86.8771|America/Cancun
 GRU|Guarulhos|São Paulo|BR|-23.4356|-46.4731|America/Sao_Paulo
 EZE|Ezeiza|Buenos Aires|AR|-34.8222|-58.5358|America/Argentina/Buenos_Aires
 BOG|El Dorado|Bogotá|CO|4.7016|-74.1469|America/Bogota
+INV|Inverness|Inverness|GB|57.5425|-4.0475|Europe/London
+PEG|Perugia San Francesco|Perugia|IT|43.0959|12.5132|Europe/Rome
+SVO|Sheremetyevo|Moscow|RU|55.9726|37.4146|Europe/Moscow
 `;
 
 // Airline IATA codes -> names
 window.SF_AIRLINES = {
-  PC: 'Pegasus', TK: 'Turkish Airlines', VF: 'AJet', XQ: 'SunExpress', ME: 'Middle East Airlines',
+  PC: 'Pegasus', SU: 'Aeroflot', RK: 'Ryanair UK', TK: 'Turkish Airlines', VF: 'AJet', XQ: 'SunExpress', ME: 'Middle East Airlines',
   BA: 'British Airways', VS: 'Virgin Atlantic', FR: 'Ryanair', U2: 'easyJet', W6: 'Wizz Air', W9: 'Wizz Air UK',
   LS: 'Jet2', BY: 'TUI', LM: 'Loganair', EI: 'Aer Lingus', EK: 'Emirates', QR: 'Qatar Airways', EY: 'Etihad',
   FZ: 'flydubai', G9: 'Air Arabia', LH: 'Lufthansa', AF: 'Air France', KL: 'KLM', IB: 'Iberia', VY: 'Vueling',

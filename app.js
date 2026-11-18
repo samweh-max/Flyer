@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.7';
+const VERSION = '1.8';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1174,7 +1174,8 @@ function importBackup(e) {
       db.flights = [...byId.values()];
       if (data.settings) db.settings = normalise({ settings: data.settings }).settings;
       save(); applyTheme();
-      toast(`Imported ${ok.length} flight${ok.length === 1 ? '' : 's'}`);
+      const skip = data.flights.length - ok.length;
+      toast(`Imported ${ok.length} flight${ok.length === 1 ? '' : 's'}` + (skip ? ` · ${skip} skipped` : ''));
       rerenderSettings();
     } catch (err) { toast("That file isn't a Samflyer backup"); }
   };
