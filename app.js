@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.13';
+const VERSION = '1.14';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -872,7 +872,7 @@ function happenedHTML(f) {
     <ol class="happened">${list.map((x) => `<li>${alertIcon(x.type)}<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800">${esc(x.title)}</div><div class="muted" style="font-size:12px">${esc(x.sub || '')}</div></div><span class="muted num" style="font-size:11px">${whenStr(x.at)}</span></li>`).join('')}</ol>`;
 }
 function leaveCard(f, st) {
-  if (f.demo || f.friend || !(st.key === 'sched' || st.key === 'soon') || f.dep < Date.now()) return '';
+  if (f.demo || f.friend || !db.settings.alerts.leave || !(st.key === 'sched' || st.key === 'soon') || f.dep < Date.now()) return '';
   const h = leaveHOf(f), al = db.settings.alerts;
   const leaveAt = f.dep - h * 3600000;
   return `<div class="card" style="gap:10px"><div class="between"><h2>Leave for the airport</h2><span class="num" style="font-size:13px;font-weight:800">${al.leave ? `by ${fmt(leaveAt, f.A.tz, 'time')}` : ''}</span></div>
@@ -1062,7 +1062,6 @@ function airportView(code) {
       const rt = new Map(); mine.forEach((f) => { const k = f.from === code ? f.to : f.from; rt.set(k, (rt.get(k) || 0) + 1); });
       const fav = topOf(rt), far = [...mine].sort((p, q) => q.mi - p.mi)[0];
       const items = [];
-      if (done.length) items.push(['First visit', `${fmt(done[0].dep, done[0].A.tz, 'mon')} ${fmt(done[0].dep, done[0].A.tz, 'year')}`, `${done[0].from} → ${done[0].to}`]);
       if (fav) items.push(['Most flown with', `${code} ↔ ${fav[0]}`, `${fav[1]} flight${fav[1] === 1 ? '' : 's'} · ${AP[fav[0]] ? AP[fav[0]].city : ''}`]);
       if (far) items.push(['Longest from here', `${far.from} → ${far.to}`, `${durStr(far.dur)} · ${nf.format(far.mi * 1.609344)} km`]);
       const yrs = new Set(done.map(yearOf)); if (yrs.size > 1) items.push(['Years visited', `${yrs.size}`, [...yrs].sort().join(' · ')]);
@@ -1076,11 +1075,10 @@ function airportView(code) {
   drawRoutes(routes.length ? routes : [{ a: A, b: A }], { sel: code });
 }
 
-let alertsSeg = 'recent';
 function alertsView() {
-  layout({ useMap: false, tab: 'alerts' });
+  layout({ useMap: false, tab: 'settings' });
   $('#grab-content').innerHTML = '';
-  const s = db.settings, byId = new Map(db.flights.map((f) => [f.id, f]));
+  const byId = new Map(db.flights.map((f) => [f.id, f]));
   const unread = new Set(db.alerts.filter((x) => !x.read).map((x) => x.id));
   const rows = db.alerts.slice(0, 60).map((x) => {
     const f = byId.get(x.flightId);
@@ -1088,25 +1086,30 @@ function alertsView() {
     const inner = `${alertIcon(x.type)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:800">${head}${esc(x.title)}</div><div class="muted" style="font-size:12px">${f ? esc(f.from + ' → ' + f.to) + ' · ' : ''}${esc(x.sub || '')}</div></div><span class="muted" style="font-size:12px">${whenStr(x.at)}</span>${unread.has(x.id) ? '<span class="newdot" aria-label="New"></span>' : ''}`;
     return f ? `<li><a href="#/flight/${esc(f.id)}">${inner}</a></li>` : `<li><div>${inner}</div></li>`;
   }).join('');
-  const kinds = [['delays', 'Delays', '15 min or more'], ['gates', 'Gate & terminal changes', ''], ['landed', 'Landed', ''], ['belt', 'Bag belt', ''], ['leave', 'Time to leave', 'In your Calendar'], ['checkin', 'Check-in opens', '24h before']];
-  const up = flightsD().filter((f) => !f.demo && f.dep > Date.now()).sort((p, q) => p.dep - q.dep);
-  const recent = `${rows ? `<ul class="alist">${rows}</ul>` : `<div class="card"><div class="note">No alerts yet. When a delay, gate change, landing or bag belt turns up for one of your flights, it's listed here — and on the flight itself.</div></div>`}
-    <div class="note">These are collected while Samflyer is open (it refreshes as soon as you open it). Reminders you add to Calendar arrive even when it's closed.</div>
-    ${db.alerts.length ? '<button class="linkbtn" data-act="clearAlerts">Clear all</button>' : ''}`;
-  const what = `<div class="card mini-list">
-      ${kinds.map(([k, l, d]) => `<div class="minirow"><span style="flex:1"><span style="font-size:14px;font-weight:600">${l}</span>${d ? ` <span class="muted" style="font-size:12px">· ${d}</span>` : ''}</span><button class="mini" role="switch" aria-label="${l}" aria-checked="${!!s.alerts[k]}" data-act="alert" data-v="${k}"></button></div>`).join('')}
-    </div>
-    <div class="card" style="gap:10px"><h2>Leave for the airport</h2>
-      <div class="chips" role="group" aria-label="Usual time before take-off">${[2, 2.5, 3, 4].map((v) => `<button data-act="defLeave" data-v="${v}" aria-pressed="${s.leaveH === v}">${leaveLabel(v)} before</button>`).join('')}</div>
-      <div class="note">Your usual. Change it on any flight from its own screen.</div>
-      ${up.length ? `<button class="btn ghost" data-act="calAll">${AL_ICON.cal} Add all ${up.length} upcoming to Calendar</button>` : ''}</div>`;
   $('#content').innerHTML = `<div class="stack">
-    <h1>Alerts</h1>
-    <div class="seg" role="group"><button data-act="alertsSeg" data-v="recent" aria-pressed="${alertsSeg === 'recent'}">Recent</button><button data-act="alertsSeg" data-v="what" aria-pressed="${alertsSeg === 'what'}">What to alert</button></div>
-    ${alertsSeg === 'recent' ? recent : what}
+    <div class="row" style="gap:10px"><a class="round" href="#/settings" aria-label="Back to Settings">${ICON.back}</a><h1 style="margin:0">Recent alerts</h1></div>
+    ${rows ? `<ul class="alist">${rows}</ul>` : `<div class="card"><div class="note">No alerts yet. When a delay, gate change, landing or bag belt turns up for one of your flights, it's listed here and on the flight itself.</div></div>`}
+    <div class="note">These are collected while Samflyer is open (it refreshes as soon as you open it). Reminders you add to Calendar arrive even when it's closed.</div>
+    ${db.alerts.length ? '<button class="linkbtn" data-act="clearAlerts">Clear all</button>' : ''}
   </div>`;
   if (unread.size) { db.alerts.forEach((x) => { x.read = true; }); save(); }
   updateAlertDot();
+}
+function alertsCardHTML() {
+  const s = db.settings, n = unreadAlerts();
+  const kinds = [['delays', 'Delays', '15 min or more'], ['gates', 'Gate & terminal changes', ''], ['landed', 'Landed', ''], ['belt', 'Bag belt', ''], ['leave', 'Leave for the airport', 'Calendar reminder'], ['checkin', 'Check-in opens', '24h before']];
+  const up = flightsD().filter((f) => !f.demo && f.dep > Date.now());
+  return `<div class="card" style="gap:6px"><h2>Alerts</h2>
+    <a class="minirow" href="#/alerts" style="color:var(--text);text-decoration:none"><span style="flex:1;font-size:14px;font-weight:700">Recent alerts</span>${n ? `<span class="pill blue">${n} new</span>` : `<span class="muted" style="font-size:13px">${db.alerts.length || 'None'}</span>`}<span class="muted" aria-hidden="true">›</span></a>
+    <div class="mini-list" style="padding:0">
+      ${kinds.map(([k, l, d]) => `<div class="minirow"><span style="flex:1"><span style="font-size:14px;font-weight:600">${l}</span>${d ? ` <span class="muted" style="font-size:12px">· ${d}</span>` : ''}</span><button class="mini" role="switch" aria-label="${l}" aria-checked="${!!s.alerts[k]}" data-act="alert" data-v="${k}"></button></div>`).join('')}
+    </div>
+    ${s.alerts.leave ? `<div class="stack" style="gap:8px;margin-top:6px"><span class="lbl">Usual time before take-off</span>
+      <div class="chips" role="group" aria-label="Usual time before take-off">${[2, 2.5, 3, 4].map((v) => `<button data-act="defLeave" data-v="${v}" aria-pressed="${s.leaveH === v}">${leaveLabel(v)}</button>`).join('')}</div>
+      <div class="note">Change it on any flight from its own screen.</div></div>` : ''}
+    ${(s.alerts.leave || s.alerts.checkin) && up.length ? `<button class="btn ghost" data-act="calAll" style="margin-top:6px">${AL_ICON.cal} Add all ${up.length} upcoming to Calendar</button>` : ''}
+    <div class="note">Delays, gates, landing and bags are noticed while the app is open. Calendar reminders arrive even when it's closed.</div>
+  </div>`;
 }
 function flightView(id) {
   const f = findD(id);
@@ -1508,13 +1511,6 @@ function funFacts(sel, past, period) {
   F.push(['Earliest take-off', fmt(early.dep, early.A.tz, 'time'), `${early.from} → ${early.to} · ${dateStr(early)}`]);
   const reds = sel.filter((f) => { const m = mins(f); return m >= 22 * 60 || m < 6 * 60; }).length;
   if (reds) F.push(['Night flights', `${reds}`, `took off between 10pm and 6am`]);
-  const apCount = new Map(); past.forEach((f) => [f.from, f.to].forEach((c) => apCount.set(c, (apCount.get(c) || 0) + 1)));
-  const localCount = new Map([...apCount].filter(([c]) => AP[c] && AP[c].tz === HOME_TZ));
-  const homeC = (topOf(localCount.size ? localCount : apCount) || [])[0], home = AP[homeC];
-  if (home) {
-    let far = null; new Set(sel.flatMap((f) => [f.from, f.to])).forEach((c) => { const d = gcMiles(home, AP[c]); if (!far || d > far[1]) far = [c, d]; });
-    if (far && far[1] > 0) F.push(['Furthest from ' + (home.city === 'London' ? 'London' : home.city), AP[far[0]].city, `${nf.format(far[1] * 1.609344)} km away (${far[0]})`]);
-  }
   const days = sel.reduce((s, f) => s + f.dur, 0) / 86400000;
   F.push(['Time in the air', days >= 1 ? `${days.toFixed(1)} days` : `${Math.round(days * 24)} hours`, 'sitting in a seat, gate to gate']);
   const miles = sel.reduce((s, f) => s + f.mi, 0), moon = miles / 238855;
@@ -1526,8 +1522,7 @@ function funFacts(sel, past, period) {
   const dayMap = new Map(); sel.forEach((f) => { const k = `${local(f).y}-${local(f).m}-${local(f).d}`; if (!dayMap.has(k)) dayMap.set(k, []); dayMap.get(k).push(f); });
   const bigDay = [...dayMap.values()].sort((p, q) => q.length - p.length)[0];
   if (bigDay && bigDay.length > 1) F.push(['Busiest day', `${bigDay.length} flights`, `${dateStr(bigDay[0])} · ${bigDay.map((f) => f.from).concat(bigDay[bigDay.length - 1].to).join(' → ')}`]);
-  if (period === 'all') { const first = [...sel].sort((p, q) => p.dep - q.dep)[0]; F.push(['First flight', `${fmt(first.dep, first.A.tz, 'mon')} ${fmt(first.dep, first.A.tz, 'year')}`, `${first.from} → ${first.to}`]); }
-  else {
+  if (period !== 'all') {
     const before = new Set(past.filter((f) => yearOf(f) < +period).flatMap((f) => [f.from, f.to]));
     const fresh = [...new Set(sel.flatMap((f) => [f.from, f.to]))].filter((c) => !before.has(c));
     if (fresh.length) F.push(['New airports', `${fresh.length}`, fresh.slice(0, 5).join(' · ')]);
@@ -1628,7 +1623,7 @@ function settingsView() {
       <div class="between" style="font-size:14px"><span>Times shown in</span><b>Local airport time</b></div></div>
     <div class="card"><h2>Globe</h2>${seg('globe', s.globe || 'sat', [['sat', 'Satellite'], ['day', 'Day photo'], ['flat', 'Flat map']])}
       <span class="note">${{ sat: 'NASA Earth photo in light mode, city lights at night in dark mode.', day: 'NASA daytime Earth photo all the time.', flat: 'Clean drawn map in the app colours — sharpest when zoomed in.' }[s.globe || 'sat']} City names appear as you zoom in.</span></div>
-    <a class="card" href="#/alerts" style="gap:4px"><div class="between"><h2>Alerts</h2><span class="muted" style="font-size:13px">${Object.values(s.alerts).filter(Boolean).length} on ›</span></div><span class="note">Choose them in the Alerts tab.</span></a>
+    ${alertsCardHTML()}
     <div class="card"><div class="between"><h2>Live flight data</h2>${hasKey() ? '<span class="pill green">On</span>' : '<span class="pill grey">Off</span>'}</div>
       ${hasKey() ? `<div class="note">Your AeroDataBox key is saved on this phone only.</div>
         <div class="grid2"><button class="btn ghost" data-act="testKey">Test key</button><button class="btn ghost" data-act="removeKey">Remove key</button></div>
@@ -1660,7 +1655,7 @@ const ACT = {
   units: (el, v) => { db.settings.units = v; save(); rerenderSettings(); },
   theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); rerenderSettings(); },
   globe: (el, v) => { db.settings.globe = v; save(); nightBroken = false; nightErrors = 0; restyle(); rerenderSettings(); },
-  alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); },
+  alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); if (v === 'leave' || v === 'checkin') setTimeout(rerenderSettings, 220); },
   lookupPlanes: async () => {
     if (lookupRun) return;
     const todo = flightsD().filter((f) => f.arr <= Date.now() && !f.demo && f.flightNo && !f.acTried && (!f.aircraft || !f.reg)).sort((p, q) => q.dep - p.dep);
@@ -1682,8 +1677,7 @@ const ACT = {
     if (location.hash.startsWith('#/passport')) { navDir = null; const y = $('#content').scrollTop; route(); $('#content').scrollTop = y; appEl.scrollTop = 0; }
   },
   friendsFilter: (el, v) => { friendsFilter = v; navDir = null; friendsView(); },
-  alertsSeg: (el, v) => { alertsSeg = v; navDir = null; alertsView(); },
-  defLeave: (el, v) => { db.settings.leaveH = parseFloat(v); save(); navDir = null; const y = $('#content').scrollTop; alertsView(); $('#content').scrollTop = y; },
+  defLeave: (el, v) => { db.settings.leaveH = parseFloat(v); save(); rerenderSettings(); },
   leave: (el, v) => {
     const [id, h] = v.split('|'); const f = db.flights.find((x) => x.id === id); if (!f) return;
     f.leaveH = parseFloat(h); save();
@@ -1782,7 +1776,7 @@ function addDemo() {
 }
 
 /* ---------- Router + ticker ---------- */
-const TAB_ORDER = { home: 0, friends: 1, alerts: 2, passport: 3, settings: 4 };
+const TAB_ORDER = { home: 0, friends: 1, passport: 2, settings: 3 };
 let prevHash = '', curHash = '';
 function route() {
   const parts = (location.hash.slice(1) || '/').split('/');
