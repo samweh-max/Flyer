@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.8';
+const VERSION = '1.9';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -19,12 +19,12 @@ const HOME_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Lond
 
 /* ---------- Storage ---------- */
 const KEY = 'samflyer.v1';
-const DEFAULT_SETTINGS = { units: 'both', theme: 'system', globe: 'sat', apiKey: '', autoRefresh: true, alerts: { delays: true, gates: true, leave: true, landed: true, belt: true } };
+const DEFAULT_SETTINGS = { units: 'both', theme: 'system', globe: 'sat', apiKey: '', autoRefresh: true, leaveH: 3, alerts: { delays: true, gates: true, leave: true, checkin: true, landed: true, belt: true } };
 function normalise(d) {
   d = d || {};
   const s = Object.assign({}, DEFAULT_SETTINGS, d.settings || {});
   s.alerts = Object.assign({}, DEFAULT_SETTINGS.alerts, (d.settings && d.settings.alerts) || {});
-  return { flights: Array.isArray(d.flights) ? d.flights : [], settings: s, usage: d.usage || { month: '', units: 0 }, airports: d.airports || {} };
+  return { flights: Array.isArray(d.flights) ? d.flights : [], settings: s, usage: d.usage || { month: '', units: 0 }, airports: d.airports || {}, alerts: Array.isArray(d.alerts) ? d.alerts.slice(0, 200) : [] };
 }
 function load() { try { return normalise(JSON.parse(localStorage.getItem(KEY))); } catch (e) { return normalise({}); } }
 let db = load();
@@ -185,6 +185,45 @@ function fromAdb(x) {
     }
   };
 }
+/* ---------- Alerts (no server: recorded when the app refreshes, shown in-app) ---------- */
+const ALERT_KIND = { delay: 'delays', gate: 'gates', landed: 'landed', belt: 'belt' };
+function addAlert(f, type, title, sub) {
+  if (!db.settings.alerts[ALERT_KIND[type]]) return;
+  db.alerts.unshift({ id: 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), flightId: f.id, type, title, sub, at: Date.now(), read: false });
+  db.alerts = db.alerts.slice(0, 200);
+}
+function unreadAlerts() { return db.alerts.filter((x) => !x.read).length; }
+function updateAlertDot() { const d = $('#alert-dot'); if (d) d.hidden = !unreadAlerts(); }
+const leaveHOf = (f) => (f.leaveH != null ? f.leaveH : db.settings.leaveH);
+const leaveLabel = (h) => (h % 1 ? `${Math.floor(h)}½h` : `${h}h`);
+/* Calendar file: one event per flight with "time to leave" and "check-in" alarms built in */
+function icsFor(list) {
+  const stamp = (t) => new Date(t).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const escI = (s) => String(s).replace(/[\\;,]/g, (m) => '\\' + m).replace(/\n/g, '\\n');
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Samflyer//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
+  list.forEach((f) => {
+    const h = leaveHOf(f), al = db.settings.alerts;
+    lines.push('BEGIN:VEVENT', `UID:${f.id}@samflyer`, `DTSTAMP:${stamp(Date.now())}`, `DTSTART:${stamp(f.dep)}`, `DTEND:${stamp(f.arr)}`,
+      `SUMMARY:${escI(`✈ ${prettyNo(f) || "Flight"} ${f.from} → ${f.to}`)}`, `LOCATION:${escI(f.A.name + ', ' + f.A.city)}`,
+      `DESCRIPTION:${escI(`${titleOf(f)}\nDeparts ${fmt(f.dep, f.A.tz, 'time')} ${f.A.city} time · arrives ${fmt(f.arr, f.B.tz, 'time')} ${f.B.city} time${f.depTerm ? '\nTerminal ' + f.depTerm : ''}`)}`);
+    if (al.leave) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${escI(`Leave for ${f.A.city} airport`)}`, `TRIGGER:-PT${Math.round(h * 60)}M`, 'END:VALARM');
+    if (al.checkin) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Check-in opens', 'TRIGGER:-PT24H', 'END:VALARM');
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  return lines.join('\r\n');
+}
+async function sendCalendar(list, name) {
+  const text = icsFor(list);
+  const file = new File([text], name + '.ics', { type: 'text/calendar' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a'); a.href = url; a.download = name + '.ics'; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
 /* Refresh one stored flight. Returns a list of human-readable changes. */
 async function refreshFlight(id) {
   const f = db.flights.find((x) => x.id === id);
@@ -194,12 +233,22 @@ async function refreshFlight(id) {
   const match = arr.map(fromAdb).find((m) => m.from === f.from && m.to === f.to) || (arr.length === 1 ? fromAdb(arr[0]) : null);
   if (!match) { f.live = Object.assign({}, f.live || {}, { fetchedAt: Date.now(), notFound: true }); save(); return []; }
   const old = f.live || {}, L = match.live, changes = [];
+  const tzA = AP[f.from].tz, tzB = AP[f.to].tz, sched = match.depS || zonedToUtc(f.depDate, f.depTime, tzA);
+  const note = (type, title, sub) => { changes.push(title); addAlert(f, type, title, sub); };
+  const lateMin = (t) => Math.round((t - sched) / 60000);
+  const landedNow = /arrived|landed/i.test(L.status || '') && !/arrived|landed/i.test(old.status || '');
   if (old.fetchedAt) {
-    if (L.depGate && L.depGate !== old.depGate) changes.push(`Gate ${old.depGate ? 'changed to' : 'is'} ${L.depGate}`);
-    if (L.arrGate && L.arrGate !== old.arrGate) changes.push(`Arrival gate ${L.arrGate}`);
-    if (L.belt && L.belt !== old.belt) changes.push(`Bags on belt ${L.belt}`);
-    if (old.depBest && L.depBest && Math.abs(L.depBest - old.depBest) >= 5 * 60000) changes.push(`Departure now ${fmt(L.depBest, AP[f.from].tz, 'time')}`);
-    if (L.status !== old.status && (L.status === 'Canceled' || L.status === 'Diverted')) changes.push(`Flight ${L.status === 'Canceled' ? 'cancelled' : 'diverted'}`);
+    if (L.depGate && L.depGate !== old.depGate) note('gate', old.depGate ? `Gate ${old.depGate} → ${L.depGate}` : `Gate ${L.depGate}`, old.depGate ? 'Gate changed' : 'Gate posted');
+    if (L.depTerm && old.depTerm && L.depTerm !== old.depTerm) note('gate', `Terminal ${old.depTerm} → ${L.depTerm}`, 'Terminal changed');
+    if (old.depBest && L.depBest && Math.abs(L.depBest - old.depBest) >= 5 * 60000 && !landedNow) {
+      const m = lateMin(L.depBest);
+      note('delay', m >= 5 ? `Delayed ${lateStr(m).replace(' late', '')}` : 'Back on time', `Now leaves ${fmt(L.depBest, tzA, 'time')}`);
+    }
+    if (landedNow) note('landed', `Landed in ${AP[f.to].city}`, `At ${fmt(L.arrBest || Date.now(), tzB, 'time')}${L.arrGate ? ' · gate ' + L.arrGate : ''}`);
+    if (L.belt && L.belt !== old.belt) note('belt', `Bags on belt ${L.belt}`, AP[f.to].name || AP[f.to].city);
+    if (L.status !== old.status && (L.status === 'Canceled' || L.status === 'Diverted')) note('delay', `Flight ${L.status === 'Canceled' ? 'cancelled' : 'diverted'}`, 'Check with the airline');
+  } else if (L.depBest && lateMin(L.depBest) >= 15) {
+    note('delay', `Delayed ${lateStr(lateMin(L.depBest)).replace(' late', '')}`, `Now leaves ${fmt(L.depBest, tzA, 'time')}`);
   }
   if (old.inbound) L.inbound = old.inbound;
   if (!L.pos && old.pos && old.pos.src !== 'AeroDataBox') L.pos = old.pos;
@@ -452,6 +501,10 @@ function drawRoutes(routes, opts = {}) {
   try { map.getSource('lines').setData(lineData); map.getSource('aps').setData(apData); } catch (e) { /* style still loading */ }
   if (opts.fit !== false) fitTo(bounds, opts.force);
 }
+/* Fit the routes into the part of the screen the card leaves free.
+   Works out the zoom from the globe's real size on screen rather than trusting fitBounds,
+   which on the 3D globe tends to leave routes under the card or too zoomed in. */
+const RAD = Math.PI / 180;
 function fitTo(bounds, force) {
   if (!map || !mapReady) return;
   if (userMoved && !force) return;
@@ -459,17 +512,38 @@ function fitTo(bounds, force) {
   const H = appH(), W = appEl.offsetWidth || window.innerWidth;
   const safeTop = safeTopPx();
   const hasTopButtons = !!$('#top-left').children.length || !!$('#top-right').querySelector('a,button');
-  const top = safeTop + (hasTopButtons ? 62 : 14), bottom = Math.max(24, Math.min(visibleSheet() + 12, H - top - 160));
-  const duration = reduceMotion() ? 0 : 900;
+  const top = safeTop + (hasTopButtons ? 64 : 16);
+  const bottom = Math.max(24, Math.min(visibleSheet() + 16, H - top - 140));
+  const side = 28;
+  const avail = Math.max(110, Math.min(W - 2 * side, H - top - bottom));
+  const duration = reduceMotion() ? 0 : 700;
   map.resize();
-  const globeZoom = () => { const D = Math.max(160, Math.min(W - 48, H - top - bottom - 20)); return Math.log2(D * Math.PI / 512); };
-  if (!bounds.length) { map.easeTo({ center: [10, 45], zoom: globeZoom(), padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
-  let minLat = 90, maxLat = -90, minLon = 1e9, maxLon = -1e9;
-  bounds.forEach(([la, lo]) => { minLat = Math.min(minLat, la); maxLat = Math.max(maxLat, la); minLon = Math.min(minLon, lo); maxLon = Math.max(maxLon, lo); });
-  if (maxLon - minLon > 150) { map.easeTo({ center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2], zoom: globeZoom(), padding: { top, bottom, left: 0, right: 0 }, duration }); return; }
-  const side = Math.min(48, W / 6);
-  map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: { top, bottom, left: side, right: side }, maxZoom: 5.5, duration, essential: true });
+  // MapLibre draws the globe with radius worldSize / (2π cos(lat)), worldSize = 512 · 2^zoom
+  const zoomFor = (diameterPx, lat) => Math.log2(diameterPx * Math.PI * Math.cos(Math.max(-80, Math.min(80, lat)) * RAD) / 512);
+  let cLat = 30, cLon = 20, spread = Math.PI / 2;
+  if (bounds.length) {
+    let x = 0, y = 0, z = 0;
+    bounds.forEach(([la, lo]) => { const p = la * RAD, l = lo * RAD; x += Math.cos(p) * Math.cos(l); y += Math.cos(p) * Math.sin(l); z += Math.sin(p); });
+    const n = Math.hypot(x, y, z);
+    if (n > 1e-6) {
+      cLat = Math.asin(z / n) / RAD; cLon = Math.atan2(y, x) / RAD;
+      const cp = cLat * RAD, cl = cLon * RAD;
+      spread = 0;
+      bounds.forEach(([la, lo]) => {
+        const p = la * RAD, l = lo * RAD;
+        const c = Math.sin(cp) * Math.sin(p) + Math.cos(cp) * Math.cos(p) * Math.cos(l - cl);
+        spread = Math.max(spread, Math.acos(Math.max(-1, Math.min(1, c))));
+      });
+    }
+  }
+  // A point at angle θ from the centre sits r·sin θ from the middle of the globe on screen.
+  const s = spread >= Math.PI / 2 ? 1 : Math.max(Math.sin(spread), 0.004);
+  let zoom = zoomFor(0.88 * avail / s, cLat);
+  zoom = Math.min(zoom, 5.2);
+  zoom = Math.max(zoom, zoomFor(Math.min(avail, 260), cLat) - 0.4);
+  map.easeTo({ center: [cLon, cLat], zoom, bearing: 0, pitch: 0, padding: { top, bottom, left: 0, right: 0 }, duration, essential: true });
 }
+function refit() { if (lastRoutes && !userMoved) drawRoutes(lastRoutes.routes, { fit: true }); }
 
 /* ---------- Screen size (iPhone home-screen apps report a short height) ---------- */
 const appEl = $('#app');
@@ -542,9 +616,11 @@ grab.addEventListener('pointermove', (e) => {
 function endDrag(cancel) {
   if (!drag) return;
   const d = drag; drag = null;
-  if (!d.moved) { if (!cancel) setSnap(snap === 'full' ? 'half' : 'full'); else setSnap(snap); return; }
+  if (!d.moved) { if (!cancel) { setSnap(snap === 'full' ? 'half' : 'full'); if (snap === 'half') setTimeout(refit, 60); } else setSnap(snap); return; }
   const best = ['full', 'half', 'peek'].reduce((b, k) => (Math.abs(snaps[k] - d.cur) < Math.abs(snaps[b] - d.cur) ? k : b), 'full');
+  const was = snap;
   setSnap(best);
+  if (best !== was && best !== 'full') setTimeout(refit, 60);
 }
 grab.addEventListener('pointerup', () => endDrag(false));
 grab.addEventListener('pointercancel', () => endDrag(true));
@@ -703,6 +779,64 @@ function liveLine(f) {
   return `<div class="between" style="font-size:12px"><span class="muted" id="live-when">${esc(when)}</span><button class="pill blue" style="border:none;min-height:32px" data-act="refresh" data-v="${esc(f.id)}">Refresh</button></div>`;
 }
 function freshPos(f) { const p = f.live && f.live.pos; return p && Date.now() - p.at < 20 * 60000 && !p.ground ? p : null; }
+const AL_ICON = {
+  delay: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4M9 2h6"/></svg>',
+  gate: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V6l8-3 8 3v14"/><path d="M9 20v-6h6v6"/></svg>',
+  landed: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20h20"/><path d="M4 14l5 1 6-6 3 .5-4 6 4 1"/></svg>',
+  belt: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="7" width="14" height="13" rx="2"/><path d="M9 7V4h6v3"/></svg>',
+  cal: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>'
+};
+const AL_TONE = { delay: 'amber', gate: 'amber', landed: 'green', belt: 'blue' };
+function alertIcon(type) { return `<span class="al-ic ${AL_TONE[type] || 'blue'}">${AL_ICON[type] || AL_ICON.gate}</span>`; }
+function whenStr(t) { const d = Date.now() - t; return d < 86400000 ? agoStr(d) : new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); }
+function happenedHTML(f) {
+  const list = db.alerts.filter((x) => x.flightId === f.id).slice(0, 8);
+  if (!list.length) return '';
+  const fresh = list.filter((x) => !x.read).length;
+  return `<div class="between" style="margin-top:4px"><span class="lbl">What's happened</span>${fresh ? `<span class="lbl" style="color:var(--blue)">${fresh} new</span>` : ''}</div>
+    <ol class="happened">${list.map((x) => `<li>${alertIcon(x.type)}<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800">${esc(x.title)}</div><div class="muted" style="font-size:12px">${esc(x.sub || '')}</div></div><span class="muted num" style="font-size:11px">${whenStr(x.at)}</span></li>`).join('')}</ol>`;
+}
+function leaveCard(f, st) {
+  if (f.demo || !(st.key === 'sched' || st.key === 'soon') || f.dep < Date.now()) return '';
+  const h = leaveHOf(f), al = db.settings.alerts;
+  const leaveAt = f.dep - h * 3600000;
+  return `<div class="card" style="gap:10px"><div class="between"><h2>Leave for the airport</h2><span class="num" style="font-size:13px;font-weight:800">${al.leave ? `by ${fmt(leaveAt, f.A.tz, 'time')}` : ''}</span></div>
+    <div class="row" style="gap:6px"><div class="chips" role="group" aria-label="How long before take-off">${[2, 2.5, 3, 4].map((v) => `<button data-act="leave" data-v="${esc(f.id)}|${v}" aria-pressed="${h === v}">${leaveLabel(v)}</button>`).join('')}</div>
+      <button class="round cal" data-act="cal" data-v="${esc(f.id)}" aria-label="Add reminders to Calendar" style="margin-left:auto">${AL_ICON.cal}</button></div>
+    <div class="note">Before take-off${f.live && f.live.depBest ? ', moved with any delay' : ''}. Tap the calendar to get the reminder${al.checkin ? ' and a check-in alert 24h before' : ''} on your phone, even with the app closed.</div></div>`;
+}
+let alertsSeg = 'recent';
+function alertsView() {
+  layout({ useMap: false, tab: 'alerts' });
+  $('#grab-content').innerHTML = '';
+  const s = db.settings, byId = new Map(db.flights.map((f) => [f.id, f]));
+  const unread = new Set(db.alerts.filter((x) => !x.read).map((x) => x.id));
+  const rows = db.alerts.slice(0, 60).map((x) => {
+    const f = byId.get(x.flightId);
+    const head = f ? `${esc(prettyNo(f) || (f.from + '→' + f.to))} · ` : '';
+    const inner = `${alertIcon(x.type)}<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:800">${head}${esc(x.title)}</div><div class="muted" style="font-size:12px">${f ? esc(f.from + ' → ' + f.to) + ' · ' : ''}${esc(x.sub || '')}</div></div><span class="muted" style="font-size:12px">${whenStr(x.at)}</span>${unread.has(x.id) ? '<span class="newdot" aria-label="New"></span>' : ''}`;
+    return f ? `<li><a href="#/flight/${esc(f.id)}">${inner}</a></li>` : `<li><div>${inner}</div></li>`;
+  }).join('');
+  const kinds = [['delays', 'Delays', '15 min or more'], ['gates', 'Gate & terminal changes', ''], ['landed', 'Landed', ''], ['belt', 'Bag belt', ''], ['leave', 'Time to leave', 'In your Calendar'], ['checkin', 'Check-in opens', '24h before']];
+  const up = flightsD().filter((f) => !f.demo && f.dep > Date.now()).sort((p, q) => p.dep - q.dep);
+  const recent = `${rows ? `<ul class="alist">${rows}</ul>` : `<div class="card"><div class="note">No alerts yet. When a delay, gate change, landing or bag belt turns up for one of your flights, it's listed here — and on the flight itself.</div></div>`}
+    <div class="note">These are collected while Samflyer is open (it refreshes as soon as you open it). Reminders you add to Calendar arrive even when it's closed.</div>
+    ${db.alerts.length ? '<button class="linkbtn" data-act="clearAlerts">Clear all</button>' : ''}`;
+  const what = `<div class="card mini-list">
+      ${kinds.map(([k, l, d]) => `<div class="minirow"><span style="flex:1"><span style="font-size:14px;font-weight:600">${l}</span>${d ? ` <span class="muted" style="font-size:12px">· ${d}</span>` : ''}</span><button class="mini" role="switch" aria-label="${l}" aria-checked="${!!s.alerts[k]}" data-act="alert" data-v="${k}"></button></div>`).join('')}
+    </div>
+    <div class="card" style="gap:10px"><h2>Leave for the airport</h2>
+      <div class="chips" role="group" aria-label="Usual time before take-off">${[2, 2.5, 3, 4].map((v) => `<button data-act="defLeave" data-v="${v}" aria-pressed="${s.leaveH === v}">${leaveLabel(v)} before</button>`).join('')}</div>
+      <div class="note">Your usual. Change it on any flight from its own screen.</div>
+      ${up.length ? `<button class="btn ghost" data-act="calAll">${AL_ICON.cal} Add all ${up.length} upcoming to Calendar</button>` : ''}</div>`;
+  $('#content').innerHTML = `<div class="stack">
+    <h1>Alerts</h1>
+    <div class="seg" role="group"><button data-act="alertsSeg" data-v="recent" aria-pressed="${alertsSeg === 'recent'}">Recent</button><button data-act="alertsSeg" data-v="what" aria-pressed="${alertsSeg === 'what'}">What to alert</button></div>
+    ${alertsSeg === 'recent' ? recent : what}
+  </div>`;
+  if (unread.size) { db.alerts.forEach((x) => { x.read = true; }); save(); }
+  updateAlertDot();
+}
 function flightView(id) {
   const f = findD(id);
   if (!f) { location.hash = '#/'; return; }
@@ -744,13 +878,15 @@ function flightView(id) {
       <div class="stat"><span class="lbl">Altitude</span><span class="big num" id="lv-alt">${pos && pos.altFt ? nf.format(pos.altFt) + ' ft' : '—'}</span></div>
       <div class="stat"><span class="lbl">Speed</span><span class="big num" id="lv-gs" style="font-size:14px">${pos && pos.gsKt ? speedStr(pos.gsKt * 1.15078) : '—'}</span></div>
       <div class="stat"><span class="lbl">Heading</span><span class="big num" id="lv-trk">${pos && pos.track != null ? Math.round(pos.track) + '°' : '—'}</span></div></div>` : ''}
+    ${leaveCard(f, st)}
     <div class="card"><h2>Timeline</h2>
       <div class="tl">${row('Departure · ' + f.from, fmt(f.dep, f.A.tz, 'day') + ' ' + fmt(f.dep, f.A.tz, 'time'), schedSub(f.dep, f.depS, f.A.tz))}
       ${row('Arrival · ' + f.to, fmt(f.arr, f.B.tz, 'day') + ' ' + fmt(f.arr, f.B.tz, 'time'), schedSub(f.arr, f.arrS, f.B.tz))}
       ${row('Flight time', durStr(f.dur))}
       ${st.key === 'landed' ? row('Landed', agoStr(now - f.arr)) : ''}
       ${L.checkIn ? row('Check-in desk', esc(L.checkIn)) : ''}</div>
-      <div class="note">${esc(offsetDiffStr(f))}. Times are local to each airport.</div></div>
+      <div class="note">${esc(offsetDiffStr(f))}. Times are local to each airport.</div>
+      ${happenedHTML(f)}</div>
     ${planeCard(f, st)}
     <div class="grid2">
       <div class="stat"><span class="lbl">Distance</span><span class="big num" style="font-size:16px">${distStr(f.mi)}</span></div>
@@ -763,6 +899,7 @@ function flightView(id) {
   </div>`;
   const routeNow = (g) => { const s2 = status(g), fp = s2.key === 'air' ? freshPos(g) : null; return [{ a: g.A, b: g.B, pos: fp, progress: s2.key === 'air' && !fp ? progress(g) : null }]; };
   drawRoutes(routeNow(f));
+  if (db.alerts.some((x) => x.flightId === id && !x.read)) { db.alerts.forEach((x) => { if (x.flightId === id) x.read = true; }); save(); updateAlertDot(); }
   if (!done) mapRefresher = () => { const g = findD(id); if (g) drawRoutes(routeNow(g), { fit: false }); };
   if (air && L.modeS) {
     const poll = async () => {
@@ -1066,7 +1203,6 @@ function settingsView() {
   const s = db.settings;
   const seg = (act, cur, items) => `<div class="seg" role="group">${items.map(([v, l]) => `<button data-act="${act}" data-v="${v}" aria-pressed="${cur === v}">${l}</button>`).join('')}</div>`;
   const ex = { mi: 'e.g. 1,553 mi · 845 km/h', nm: 'e.g. 1,350 nm · 456 kn', both: 'e.g. 1,553 mi · 1,350 nm · 845 km/h · 456 kn' }[s.units];
-  const alerts = [['delays', 'Delays', 'When departure or arrival times change'], ['gates', 'Gate & terminal changes', 'As soon as the airport posts a change'], ['leave', 'Time to leave', 'Reminder before check-in closes'], ['landed', 'Landed', 'When the plane touches down'], ['belt', 'Bag belt', 'Which belt your bags come out on']];
   const demos = db.flights.filter((f) => f.demo).length;
   $('#content').innerHTML = `<div class="stack">
     <h1>Settings</h1>
@@ -1075,9 +1211,7 @@ function settingsView() {
       <div class="between" style="font-size:14px"><span>Times shown in</span><b>Local airport time</b></div></div>
     <div class="card"><h2>Globe</h2>${seg('globe', s.globe || 'sat', [['sat', 'Satellite'], ['day', 'Day photo'], ['flat', 'Flat map']])}
       <span class="note">${{ sat: 'NASA Earth photo in light mode, city lights at night in dark mode.', day: 'NASA daytime Earth photo all the time.', flat: 'Clean drawn map in the app colours — sharpest when zoomed in.' }[s.globe || 'sat']} City names appear as you zoom in.</span></div>
-    <div class="card" style="gap:2px"><h2 style="margin-bottom:6px">Alerts</h2>
-      ${alerts.map(([k, l, d]) => `<div class="setrow"><div style="flex:1"><div style="font-size:14px;font-weight:700">${l}</div><div class="note">${d}</div></div><button class="switch" role="switch" aria-label="${l}" aria-checked="${!!s.alerts[k]}" data-act="alert" data-v="${k}"></button></div>`).join('')}
-      <div class="notice" style="margin-top:10px">Alerts switch on in a later update — your choices are saved now. They will need the app installed on your home screen.</div></div>
+    <a class="card" href="#/alerts" style="gap:4px"><div class="between"><h2>Alerts</h2><span class="muted" style="font-size:13px">${Object.values(s.alerts).filter(Boolean).length} on ›</span></div><span class="note">Choose them in the Alerts tab.</span></a>
     <div class="card"><div class="between"><h2>Live flight data</h2>${hasKey() ? '<span class="pill green">On</span>' : '<span class="pill grey">Off</span>'}</div>
       ${hasKey() ? `<div class="note">Your AeroDataBox key is saved on this phone only.</div>
         <div class="grid2"><button class="btn ghost" data-act="testKey">Test key</button><button class="btn ghost" data-act="removeKey">Remove key</button></div>
@@ -1110,6 +1244,16 @@ const ACT = {
   theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); rerenderSettings(); },
   globe: (el, v) => { db.settings.globe = v; save(); nightBroken = false; nightErrors = 0; restyle(); rerenderSettings(); },
   alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); },
+  alertsSeg: (el, v) => { alertsSeg = v; navDir = null; alertsView(); },
+  defLeave: (el, v) => { db.settings.leaveH = parseFloat(v); save(); navDir = null; const y = $('#content').scrollTop; alertsView(); $('#content').scrollTop = y; },
+  leave: (el, v) => {
+    const [id, h] = v.split('|'); const f = db.flights.find((x) => x.id === id); if (!f) return;
+    f.leaveH = parseFloat(h); save();
+    const y = $('#content').scrollTop; navDir = null; flightView(id); $('#content').scrollTop = y;
+  },
+  cal: (el, v) => { const f = findD(v); if (f) sendCalendar([f], `Flight ${prettyNo(f) || f.from + '-' + f.to}`.replace(/\s+/g, ' ')); },
+  calAll: () => { const up = flightsD().filter((f) => !f.demo && f.dep > Date.now()); if (up.length) sendCalendar(up, 'Samflyer flights'); },
+  clearAlerts: () => { db.alerts = []; save(); navDir = null; alertsView(); updateAlertDot(); },
   fit: () => { userMoved = false; if (lastRoutes) drawRoutes(lastRoutes.routes, { force: true }); },
   refresh: async (el, v) => {
     el.disabled = true; el.textContent = 'Checking…';
@@ -1200,7 +1344,7 @@ function addDemo() {
 }
 
 /* ---------- Router + ticker ---------- */
-const TAB_ORDER = { home: 0, passport: 1, settings: 2 };
+const TAB_ORDER = { home: 0, alerts: 1, passport: 2, settings: 3 };
 function route() {
   const parts = (location.hash.slice(1) || '/').split('/');
   const a = parts[1] || '', b = parts[2] || '';
@@ -1221,6 +1365,7 @@ function route() {
     else if (a === 'edit') formView(decodeURIComponent(b));
     else if (a === 'passport') passportView();
     else if (a === 'settings') settingsView();
+    else if (a === 'alerts') alertsView();
     else home();
     applyEnter(navDir);
   } catch (err) {
@@ -1242,7 +1387,7 @@ async function autoRefreshTick() {
   refreshing = true;
   try {
     const ch = await refreshFlight(due.id);
-    if (ch.length) toast(`${due.from}→${due.to}: ${ch.join(' · ')}`);
+    if (ch.length) { toast(`${due.from}→${due.to}: ${ch.join(' · ')}`); updateAlertDot(); }
     if (!$('#ff')) route();
   } catch (e) { /* stay quiet; manual Refresh shows errors */ }
   refreshing = false;
@@ -1266,6 +1411,7 @@ window.addEventListener('hashchange', route);
 
 applyTheme();
 route();
+updateAlertDot();
 setTimeout(autoRefreshTick, 1500);
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   const hadController = !!navigator.serviceWorker.controller;
