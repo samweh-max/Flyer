@@ -1,11 +1,12 @@
 // Samflyer service worker: keeps the app working offline.
-const CACHE = 'samflyer-v1.11';
+const CACHE = 'samflyer-v1.12';
+const IMG_CACHE = 'samflyer-photos';
 const SHELL = ['./', 'index.html', 'app.js', 'data.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== IMG_CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', (e) => {
   const req = e.request;
@@ -20,6 +21,11 @@ self.addEventListener('fetch', (e) => {
       caches.open(CACHE).then((c) => c.put(req, copy));
       return res;
     }).catch(() => caches.match(req).then((r) => r || caches.match('index.html'))));
+    return;
+  }
+  // Aircraft photos: keep after the first view.
+  if (url.hostname === 'upload.wikimedia.org') {
+    e.respondWith(caches.open(IMG_CACHE).then((c) => c.match(req).then((hit) => hit || fetch(req).then((res) => { if (res.ok || res.type === 'opaque') c.put(req, res.clone()); return res; }))));
     return;
   }
   // Map library and fonts: cache first.

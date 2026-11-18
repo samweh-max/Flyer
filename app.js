@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.11';
+const VERSION = '1.12';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -259,6 +259,7 @@ async function refreshFlight(id) {
   }
   ['depTerm', 'depGate', 'arrGate', 'belt'].forEach((k) => { if (L[k]) f[k] = L[k]; });
   if (L.model && !f.aircraft) f.aircraft = L.model;
+  if (L.reg && !f.reg) f.reg = L.reg.toUpperCase();
   if (!f.airline && match.airline) f.airline = match.airline;
   save();
   return changes;
@@ -879,6 +880,124 @@ function leaveCard(f, st) {
       <button class="round cal" data-act="cal" data-v="${esc(f.id)}" aria-label="Add reminders to Calendar" style="margin-left:auto">${AL_ICON.cal}</button></div>
     <div class="note">Before take-off${f.live && f.live.depBest ? ', moved with any delay' : ''}. Tap the calendar to get the reminder${al.checkin ? ' and a check-in alert 24h before' : ''} on your phone, even with the app closed.</div></div>`;
 }
+
+/* ---------- Aircraft: types, best guesses, photos ---------- */
+// [test on the model text, key, display name, Wikipedia page for the photo]
+const AC_TYPES = [
+  [/A318/i, 'A318', 'Airbus A318', 'Airbus_A318'],
+  [/A319.*neo|A19N/i, 'A319N', 'Airbus A319neo', 'Airbus_A320neo_family'],
+  [/A320.*neo|A20N/i, 'A20N', 'Airbus A320neo', 'Airbus_A320neo_family'],
+  [/A321.*neo|A21N/i, 'A21N', 'Airbus A321neo', 'Airbus_A321neo'],
+  [/A319/i, 'A319', 'Airbus A319', 'Airbus_A319'],
+  [/A320/i, 'A320', 'Airbus A320', 'Airbus_A320_family'],
+  [/A321/i, 'A321', 'Airbus A321', 'Airbus_A321'],
+  [/A220|BCS[13]|CS[13]00/i, 'A220', 'Airbus A220', 'Airbus_A220'],
+  [/A330.*neo|A33[89]|A330-[89]00/i, 'A330N', 'Airbus A330neo', 'Airbus_A330neo'],
+  [/A330|A33[23]/i, 'A330', 'Airbus A330', 'Airbus_A330'],
+  [/A340/i, 'A340', 'Airbus A340', 'Airbus_A340'],
+  [/A350|A35K|A359/i, 'A350', 'Airbus A350', 'Airbus_A350'],
+  [/A380|A388/i, 'A380', 'Airbus A380', 'Airbus_A380'],
+  [/737.*MAX|737-?[89]\s?MAX|B3[89]M|737-8200/i, 'B38M', 'Boeing 737 MAX', 'Boeing_737_MAX'],
+  [/737-?[6789]00|B73[6789]|737NG/i, 'B738', 'Boeing 737-800', 'Boeing_737_Next_Generation'],
+  [/737/i, 'B737', 'Boeing 737', 'Boeing_737'],
+  [/747/i, 'B747', 'Boeing 747', 'Boeing_747'],
+  [/757/i, 'B757', 'Boeing 757', 'Boeing_757'],
+  [/767/i, 'B767', 'Boeing 767', 'Boeing_767'],
+  [/777|B77[23LW]/i, 'B777', 'Boeing 777', 'Boeing_777'],
+  [/787|B78[89X]/i, 'B787', 'Boeing 787 Dreamliner', 'Boeing_787_Dreamliner'],
+  [/E-?1[79]5|E-?1[79]0|E[79]\dE?|ERJ-?1[79]|Embraer 1[79]/i, 'EJET', 'Embraer E-Jet', 'Embraer_E-Jet_family'],
+  [/ATR/i, 'ATR', 'ATR 72', 'ATR_72'],
+  [/Q400|DH8|Dash 8/i, 'DH8D', 'Dash 8 Q400', 'De_Havilland_Canada_Dash_8'],
+  [/CRJ/i, 'CRJ', 'Bombardier CRJ', 'Bombardier_CRJ700_series']
+];
+function acType(text) {
+  const s = String(text || '').trim();
+  if (!s) return null;
+  for (const [re, key, name, wiki] of AC_TYPES) if (re.test(s)) return { key, name, wiki };
+  return { key: s.toUpperCase(), name: s, wiki: '' };
+}
+// What an airline usually flies, by airline and (sometimes) route and year. Used only when nothing better is known.
+function guessAircraft(f) {
+  const al = (f.flightNo || '').slice(0, 2).toUpperCase(), y = +String(f.depDate).slice(0, 4);
+  const long = f.mi > 2500, has = (c) => f.from === c || f.to === c;
+  const G = {
+    ME: () => (has('LHR') || has('CDG') ? (y < 2022 ? 'A330' : 'A321neo') : 'A320neo'),
+    TK: () => (long ? 'B777' : 'A321neo'), PC: () => 'A320neo', VF: () => 'B737-800',
+    BA: () => (long ? 'B787' : 'A320'), U2: () => 'A320', FR: () => 'B737-800', RK: () => 'B737-800',
+    VY: () => 'A320', SU: () => 'A320', SK: () => 'A320neo', UA: () => (has('LHR') || has('GVA') || has('BRU') || has('CDG') ? 'B767' : 'B737-800'),
+    SV: () => (long ? 'B787' : 'A320neo'), A3: () => 'A320neo', RJ: () => (long ? 'B787' : 'A320'), AZ: () => 'A320neo',
+    RO: () => 'B737-700', EK: () => (long ? 'A380' : 'B777'), QR: () => (long ? 'B787' : 'A320'), W6: () => 'A321neo', LH: () => 'A320', AF: () => 'A320', KL: () => 'B737-800', LX: () => 'A220', EW: () => 'A320', TP: () => 'A320neo', IB: () => 'A320', LS: () => 'B737-800'
+  };
+  return G[al] ? G[al]() : '';
+}
+// Type for stats: what's recorded, else the best guess (marked likely)
+function planeOf(f) {
+  if (f.aircraft) { const t = acType(f.aircraft); if (t) return Object.assign({ likely: false }, t); }
+  const g = guessAircraft(f); const t = g && acType(g);
+  return t ? Object.assign({ likely: true }, t) : null;
+}
+// Photos: Wikipedia's lead image for the type, with the Commons credit. Kept on the phone after the first load.
+const IMG_KEY = 'samflyer.img';
+let imgCache = {}; try { imgCache = JSON.parse(localStorage.getItem(IMG_KEY)) || {}; } catch (e) { imgCache = {}; }
+const imgPending = {};
+function stripHtml(s) { const d = document.createElement('div'); d.innerHTML = s || ''; return (d.textContent || '').replace(/\s+/g, ' ').trim(); }
+async function planePhoto(wiki) {
+  if (!wiki) return null;
+  const hit = imgCache[wiki];
+  if (hit && (hit.src || Date.now() - (hit.at || 0) < 86400000)) return hit.src ? hit : null;
+  if (imgPending[wiki]) return imgPending[wiki];
+  imgPending[wiki] = (async () => {
+    try {
+      const r = await fetch(`https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&prop=pageimages&piprop=thumbnail|name&pithumbsize=640&redirects=1&titles=${encodeURIComponent(wiki)}`);
+      const j = await r.json();
+      const pg = Object.values((j.query && j.query.pages) || {})[0] || {};
+      if (!pg.thumbnail) { imgCache[wiki] = { at: Date.now() }; return null; }
+      const rec = { src: pg.thumbnail.source, file: pg.pageimage || '', credit: '', at: Date.now() };
+      if (rec.file) {
+        try {
+          const r2 = await fetch(`https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&prop=imageinfo&iiprop=extmetadata&titles=${encodeURIComponent('File:' + rec.file)}`);
+          const j2 = await r2.json();
+          const m = ((Object.values((j2.query && j2.query.pages) || {})[0] || {}).imageinfo || [{}])[0].extmetadata || {};
+          const who = stripHtml(m.Artist && m.Artist.value).slice(0, 40), lic = stripHtml(m.LicenseShortName && m.LicenseShortName.value);
+          rec.credit = [who, lic].filter(Boolean).join(' · ');
+        } catch (e) { /* credit stays generic */ }
+      }
+      imgCache[wiki] = rec;
+      try { localStorage.setItem(IMG_KEY, JSON.stringify(imgCache)); } catch (e) {}
+      return rec;
+    } catch (e) { return null; } finally { delete imgPending[wiki]; }
+  })();
+  return imgPending[wiki];
+}
+function fillPhotos(root) {
+  $$('[data-photo]', root || document).forEach(async (box) => {
+    const rec = await planePhoto(box.dataset.photo);
+    if (!rec || !box.isConnected || box.querySelector('img')) return;
+    const img = new Image(); img.alt = ''; img.decoding = 'async'; img.referrerPolicy = 'no-referrer';
+    img.onload = () => box.classList.add('loaded');
+    img.src = rec.src;
+    box.prepend(img);
+    const c = box.querySelector('.credit-ph'); if (c) c.textContent = (rec.credit ? rec.credit + ' · ' : '') + 'Wikimedia Commons';
+  });
+}
+/* Look up the real plane (type + tail number) for past flights, one at a time */
+async function lookupAircraft(id) {
+  const f = db.flights.find((x) => x.id === id);
+  if (!f || !f.flightNo) return false;
+  const list = await adb(`/flights/number/${encodeURIComponent(f.flightNo)}/${f.depDate}?withAircraftImage=false&withLocation=false&dateLocalRole=Departure`);
+  const arr = Array.isArray(list) ? list : [list];
+  const m = arr.find((x) => { const d = x.departure && x.departure.airport, ar = x.arrival && x.arrival.airport; return d && ar && d.iata === f.from && ar.iata === f.to; }) || (arr.length === 1 ? arr[0] : null);
+  const ac = m && m.aircraft;
+  f.acTried = Date.now();
+  if (ac && (ac.model || ac.reg)) {
+    if (ac.model && !f.aircraft) { f.aircraft = ac.model; f.acSrc = 'live'; }
+    if (ac.reg && !f.reg) f.reg = ac.reg.toUpperCase();
+    save(); return true;
+  }
+  save(); return false;
+}
+let lookupRun = null;
+
 /* ---------- Friends ---------- */
 const AV_COLS = ['#FFC14D', '#7EE0A1', '#B9A6FF', '#FF9C8A', '#6FD3FF', '#F5A3D8', '#C8E66B'];
 function avatarHTML(name, size = 40) {
@@ -1034,8 +1153,8 @@ function flightView(id) {
       <div class="stat"><span class="lbl">Avg speed</span><span class="big num" style="font-size:16px">${speedStr(f.mi / (f.dur / 3600000))}</span></div>
     </div>
     <div class="card"><div class="between"><h2>Details</h2><a href="#/edit/${esc(f.id)}" style="font-size:14px;font-weight:700">Edit</a></div>
-      <div class="grid3">${det('Terminal', f.depTerm)}${det('Gate', f.depGate)}${det('Seat', f.seat)}${det('Arr gate', f.arrGate)}${det('Bag belt', f.belt)}${det('Aircraft', f.aircraft)}</div>
-      ${L.reg ? `<div class="note">Plane ${esc(L.reg)}${L.model ? ' · ' + esc(L.model) : ''}</div>` : ''}</div>
+      <div class="grid3">${det('Terminal', f.depTerm)}${det('Gate', f.depGate)}${det('Seat', f.seat)}${det('Arr gate', f.arrGate)}${det('Bag belt', f.belt)}${det('Aircraft', f.aircraft || (planeOf(f) ? planeOf(f).name + ' (likely)' : ''))}${det('Tail no.', f.reg || (L.reg || ''))}</div>
+      ${L.model && f.aircraft !== L.model ? `<div class="note">Live data: ${esc(L.model)}</div>` : ''}</div>
     <button class="btn danger" data-act="del" data-v="${esc(f.id)}">Delete flight</button>
   </div>`;
   const routeNow = (g) => { const s2 = status(g), fp = s2.key === 'air' ? freshPos(g) : null; return [{ a: g.A, b: g.B, pos: fp, progress: s2.key === 'air' && !fp ? progress(g) : null }]; };
@@ -1138,6 +1257,7 @@ function formView(id, pastMode, friendMode) {
           <div class="field"><label for="f-agate">Arr gate</label><input id="f-agate" value="${v('arrGate')}"></div>
           <div class="field"><label for="f-belt">Bag belt</label><input id="f-belt" value="${v('belt')}"></div>
           <div class="field"><label for="f-ac">Aircraft</label><input id="f-ac" value="${v('aircraft')}" placeholder="A320"></div>
+          <div class="field"><label for="f-reg">Tail no.</label><input id="f-reg" value="${v('reg')}" placeholder="G-EUYB" autocapitalize="characters" spellcheck="false"></div>
         </div></details>
     </div>
     <input type="hidden" id="f-dd" value="${v('depDate')}">
@@ -1274,11 +1394,11 @@ function formView(id, pastMode, friendMode) {
       from: q('#f-from').value, to: q('#f-to').value,
       depDate: dd(), depTime: q('#f-dt').value, arrDate: q('#f-ad').value, arrTime: q('#f-at').value,
       depTerm: q('#f-term').value.trim(), depGate: q('#f-gate').value.trim(), seat: q('#f-seat').value.trim(),
-      arrGate: q('#f-agate').value.trim(), belt: q('#f-belt').value.trim(), aircraft: q('#f-ac').value.trim(),
+      arrGate: q('#f-agate').value.trim(), belt: q('#f-belt').value.trim(), aircraft: q('#f-ac').value.trim(), reg: q('#f-reg').value.trim().toUpperCase(),
       demo: false, created: existing ? existing.created : Date.now()
     };
     if (forFriend) { rec.friend = (q('#f-friend').value || '').trim(); if (!rec.friend) return err('Add your friend\u2019s name.'); }
-    if (existing && existing.leaveH != null) rec.leaveH = existing.leaveH;
+    if (existing) ['leaveH', 'acTried', 'acSrc'].forEach((k) => { if (existing[k] != null) rec[k] = existing[k]; });
     if (pendingLive) rec.live = pendingLive; else if (existing && existing.live && existing.flightNo === rec.flightNo && existing.depDate === rec.depDate) rec.live = existing.live;
     if (!AP[rec.from]) return err('Pick a known departure airport (3-letter code).');
     if (!AP[rec.to]) return err('Pick a known arrival airport (3-letter code).');
@@ -1299,6 +1419,61 @@ function formView(id, pastMode, friendMode) {
   if (!existing) setTimeout(() => { if (!q('#f-no').value) q('#f-no').focus({ preventScroll: true }); }, 350);
 }
 
+function planeStats(list) {
+  const m = new Map();
+  list.forEach((f) => {
+    const t = planeOf(f); if (!t) return;
+    const r = m.get(t.key) || { key: t.key, name: t.name, wiki: t.wiki, n: 0, likely: 0, hrs: 0, airlines: new Set() };
+    r.n++; if (t.likely) r.likely++; r.hrs += f.dur / 3600000; r.airlines.add(f.airline || AIRLINES[codeOf(f)] || codeOf(f));
+    m.set(t.key, r);
+  });
+  return [...m.values()].sort((p, q) => q.n - p.n || q.hrs - p.hrs);
+}
+function repeatPlanes(list) {
+  const m = new Map();
+  list.forEach((f) => { const reg = (f.reg || (f.live && f.live.reg) || '').toUpperCase().replace(/\s+/g, ''); if (!reg) return; if (!m.has(reg)) m.set(reg, []); m.get(reg).push(f); });
+  return [...m.entries()].filter(([, fs]) => fs.length > 1).map(([reg, fs]) => ({ reg, fs: fs.sort((p, q) => p.dep - q.dep) })).sort((p, q) => q.fs.length - p.fs.length);
+}
+function photoBox(t, h = 116) {
+  return `<div class="ph" style="height:${h}px" ${t.wiki ? `data-photo="${esc(t.wiki)}"` : ''}><svg class="ph-sil" viewBox="0 0 300 120" aria-hidden="true"><path d="M40,64 C40,56 52,52 70,52 L230,52 C250,52 262,58 266,64 C262,70 250,74 230,74 L70,74 C52,74 40,70 40,64 Z M130,62 L178,62 L150,98 L138,98 Z M60,54 L48,30 L60,30 L82,54 Z"/></svg>${t.wiki ? '<span class="credit-ph">Wikimedia Commons</span>' : ''}</div>`;
+}
+function aircraftSection(sel) {
+  const stats = planeStats(sel);
+  if (!stats.length) return '';
+  const all = flightsD().filter((f) => f.arr <= Date.now());
+  const reps = repeatPlanes(sel);
+  const makers = new Set(stats.map((s) => s.name.split(' ')[0])).size;
+  const pending = all.filter((f) => !f.demo && f.flightNo && !f.acTried && (!f.aircraft || !f.reg)).length;
+  const left = Math.max(0, Math.floor((AUTO_STOP_AT - unitsUsed()) / UNITS_PER_LOOKUP));
+  const likelyN = stats.reduce((s, r) => s + r.likely, 0);
+  const card = (r) => `<div class="pcard">${photoBox(r)}<div class="between" style="align-items:baseline;gap:6px"><span style="font-size:15px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span><span style="font-size:18px;font-weight:800">${r.n}×</span></div><span class="muted" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${Math.round(r.hrs)}h${r.likely ? ` · ${r.likely} likely` : ''} · ${esc([...r.airlines].slice(0, 3).join(', '))}</span></div>`;
+  const regRow = (p) => { const f0 = p.fs[p.fs.length - 1], t = planeOf(f0); return `<a class="mrow" href="#/flight/${esc(p.fs[p.fs.length - 1].id)}"><span class="regchip">${esc(p.reg)}</span><div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800">${esc(t ? t.name : 'Aircraft')} · ${esc(f0.airline || AIRLINES[codeOf(f0)] || codeOf(f0))}</div><div class="muted" style="font-size:12px">${p.fs.map((f) => fmt(f.dep, f.A.tz, 'short') + ' ' + fmt(f.dep, f.A.tz, 'year')).join(' · ')}</div></div><span style="font-size:13px;font-weight:800;color:var(--blue)">${p.fs.length}×</span></a>`; };
+  return `<div class="stack" style="gap:10px">
+    <div class="between"><span class="lbl">Most flown aircraft</span><a href="#/passport/aircraft" style="font-size:13px;font-weight:700">See all ${stats.length}</a></div>
+    <div class="pcards">${stats.slice(0, 8).map(card).join('')}</div>
+    <div class="grid3"><div class="stat"><span class="lbl">Types</span><span class="big">${stats.length}</span></div><div class="stat"><span class="lbl">Makers</span><span class="big">${makers}</span></div><div class="stat"><span class="lbl">Repeat planes</span><span class="big">${reps.length}</span></div></div>
+    ${likelyN || pending ? `<div class="card" style="gap:8px">${likelyN ? `<div class="note">${likelyN} flight${likelyN === 1 ? ' uses a' : 's use a'} best guess (“likely”) from the airline and route.</div>` : ''}
+      ${pending ? (hasKey() ? `<button class="btn ghost" data-act="lookupPlanes" ${lookupRun ? 'disabled' : ''}>${lookupRun ? `Looking up… ${lookupRun.done} of ${lookupRun.total}` : `Look up the real planes for ${pending} flight${pending === 1 ? '' : 's'}`}</button>
+        <div class="note">About ${pending} lookups of the ${left} you have left this month. Older flights may not be found — those keep the best guess.</div>` : `<div class="note"><a href="#/settings">Turn on live data</a> to look up the real planes and tail numbers.</div>`) : ''}</div>` : ''}
+    <div class="card" style="gap:0;padding:6px 14px 8px"><div style="min-height:38px;display:flex;align-items:center"><span class="lbl">Same plane again</span></div>
+      ${reps.length ? reps.slice(0, 6).map(regRow).join('') : '<div class="note" style="padding-bottom:6px">None yet. Tail numbers are saved from lookups and live updates, or type one into a flight\u2019s details.</div>'}</div>
+  </div>`;
+}
+function aircraftAllView() {
+  layout({ useMap: false, tabs: true, tab: 'passport', left: '' });
+  $('#grab-content').innerHTML = '';
+  const now = Date.now();
+  const past = flightsD().filter((f) => f.arr <= now);
+  const sel = past.filter((f) => ppPeriod === 'all' || yearOf(f) === +ppPeriod);
+  const stats = planeStats(sel), reps = repeatPlanes(sel);
+  $('#content').innerHTML = `<div class="stack">
+    <div class="row" style="gap:10px"><a class="round" href="#/passport" aria-label="Back to Passport">${ICON.back}</a><h1 style="margin:0">Aircraft</h1><span class="muted" style="margin-left:auto;font-size:13px">${ppPeriod === 'all' ? 'All time' : ppPeriod}</span></div>
+    ${stats.map((r, i) => `<div class="card" style="gap:10px">${photoBox(r, 150)}<div class="between" style="align-items:baseline"><span style="font-size:18px;font-weight:800">${i + 1}. ${esc(r.name)}</span><span style="font-size:20px;font-weight:800">${r.n}×</span></div><span class="muted" style="font-size:12px">${Math.round(r.hrs)} hours · ${esc([...r.airlines].join(', '))}${r.likely ? ` · ${r.likely} likely` : ''}</span>
+      ${reps.filter((p) => (planeOf(p.fs[0]) || {}).key === r.key).map((p) => `<div class="row" style="gap:8px;font-size:12px"><span class="regchip">${esc(p.reg)}</span><span class="muted">flown ${p.fs.length}×</span></div>`).join('')}</div>`).join('')}
+    <div class="note">Photos from Wikipedia / Wikimedia Commons, free-licensed; they show the type, not your exact plane.</div>
+  </div>`;
+  fillPhotos($('#content'));
+}
 function passportView() {
   layout({ tab: 'passport', snapTo: 'half', right: `<button class="round" data-act="fit" aria-label="Re-centre the globe">${ICON.fit}</button>` });
   const now = Date.now();
@@ -1319,7 +1494,7 @@ function passportView() {
   const miles = sel.reduce((s, f) => s + f.mi, 0), hrs = sel.reduce((s, f) => s + f.dur, 0) / 3600000;
   const count = (fn) => new Set(sel.flatMap(fn).filter(Boolean)).size;
   const airports = count((f) => [f.from, f.to]), countries = count((f) => [f.A.cc, f.B.cc]);
-  const airlines = count((f) => [f.airline || codeOf(f)]), planes = count((f) => [(f.aircraft || '').toUpperCase()]);
+  const airlines = count((f) => [f.airline || codeOf(f)]), planes = count((f) => [(planeOf(f) || {}).key]);
   const earth = miles / 24901;
   const topR = routes.sort((a, b) => b.n - a.n).slice(0, 5);
   const alMap = new Map();
@@ -1338,8 +1513,10 @@ function passportView() {
     <div class="grid3">${stat('Flights', sel.length)}${stat('Hours', Math.round(hrs))}${stat('Airports', airports)}${stat('Countries', countries)}${stat('Airlines', airlines)}${stat('Planes', planes || '—')}</div>
     <div class="card"><h2>Top routes</h2>${topR.map((r) => `<div class="between" style="font-size:14px"><span style="font-weight:700">${r.a.code} ↔ ${r.b.code} <span class="muted" style="font-weight:500">${esc(r.a.city)} · ${esc(r.b.city)}</span></span><span class="muted">${r.n}×</span></div>`).join('')}</div>
     <div class="card"><h2>Top airlines</h2>${topA.map(([n, c]) => `<div style="display:flex;flex-direction:column;gap:4px"><div class="between" style="font-size:14px"><span style="font-weight:700">${esc(n)}</span><span class="muted">${c}</span></div><div class="bar"><i style="width:${(c / maxA * 100).toFixed(0)}%"></i></div></div>`).join('')}</div>
+    ${aircraftSection(sel)}
     <a class="btn dash" href="#/add/past">${ICON.plus}Add a past flight</a>
   </div>`;
+  fillPhotos($('#content'));
   drawRoutes(routes.map((r) => ({ a: r.a, b: r.b, progress: null })));
 }
 
@@ -1390,6 +1567,26 @@ const ACT = {
   theme: (el, v) => { db.settings.theme = v; save(); applyTheme(); rerenderSettings(); },
   globe: (el, v) => { db.settings.globe = v; save(); nightBroken = false; nightErrors = 0; restyle(); rerenderSettings(); },
   alert: (el, v) => { db.settings.alerts[v] = !db.settings.alerts[v]; save(); el.setAttribute('aria-checked', String(db.settings.alerts[v])); },
+  lookupPlanes: async () => {
+    if (lookupRun) return;
+    const todo = flightsD().filter((f) => f.arr <= Date.now() && !f.demo && f.flightNo && !f.acTried && (!f.aircraft || !f.reg)).sort((p, q) => q.dep - p.dep);
+    const left = Math.floor((AUTO_STOP_AT - unitsUsed()) / UNITS_PER_LOOKUP);
+    if (left <= 0) return toast(ERR_TEXT.quota);
+    const run = todo.slice(0, left);
+    lookupRun = { done: 0, total: run.length, found: 0 };
+    const paint = () => { const b = $('[data-act=lookupPlanes]'); if (b) b.textContent = `Looking up… ${lookupRun.done} of ${lookupRun.total}`; };
+    paint();
+    let stop = '';
+    for (const f of run) {
+      try { if (await lookupAircraft(f.id)) lookupRun.found++; }
+      catch (e) { if (['quota', 'badkey', 'nokey'].includes(e.message) || e.name === 'TypeError') { stop = errText(e); break; } const r = db.flights.find((x) => x.id === f.id); if (r) { r.acTried = Date.now(); save(); } }
+      lookupRun.done++; paint();
+      await new Promise((r) => setTimeout(r, 1100));
+    }
+    const res = lookupRun; lookupRun = null;
+    toast(stop || `Found ${res.found} of ${res.total} planes${res.total - res.found ? ' — the rest keep the best guess' : ''}`);
+    if (location.hash.startsWith('#/passport')) { navDir = null; const y = $('#content').scrollTop; route(); $('#content').scrollTop = y; appEl.scrollTop = 0; }
+  },
   friendsFilter: (el, v) => { friendsFilter = v; navDir = null; friendsView(); },
   alertsSeg: (el, v) => { alertsSeg = v; navDir = null; alertsView(); },
   defLeave: (el, v) => { db.settings.leaveH = parseFloat(v); save(); navDir = null; const y = $('#content').scrollTop; alertsView(); $('#content').scrollTop = y; },
@@ -1507,12 +1704,13 @@ function route() {
     else navDir = 'fade';
   }
   prevScreen = screen;
+  if (appEl.scrollTop) appEl.scrollTop = 0;
   if (location.hash !== curHash) { prevHash = curHash; curHash = location.hash; }
   try {
     if (a === 'flight') flightView(decodeURIComponent(b));
     else if (a === 'add') formView(null, b === 'past');
     else if (a === 'edit') formView(decodeURIComponent(b));
-    else if (a === 'passport') passportView();
+    else if (a === 'passport') { if (b === 'aircraft') aircraftAllView(); else passportView(); }
     else if (a === 'settings') settingsView();
     else if (a === 'alerts') alertsView();
     else if (a === 'friends') { if (b === 'add') formView(null, false, true); else friendsView(); }
