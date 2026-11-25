@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.15';
+const VERSION = '1.16';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -282,7 +282,7 @@ async function checkInbound(id) {
 }
 /* Free live position from community ADS-B networks (no key). */
 async function fetchPosition(hex) {
-  const urls = [`https://api.adsb.lol/v2/icao/${hex}`, `https://api.airplanes.live/v2/hex/${hex}`];
+  const urls = adsbUrls(`/v2/icao/${hex}`);
   for (const u of urls) {
     try {
       const r = await fetch(u);
@@ -512,7 +512,9 @@ function initMap() {
   map.on('load', () => { mapReady = true; if (lastRoutes) drawRoutes(lastRoutes.routes, lastRoutes.opts); });
   map.on('click', 'ap-hit', (e) => {
     const ft = e.features && e.features[0]; const code = ft && ft.properties && ft.properties.code;
-    if (code && AP[code] && location.hash !== '#/airport/' + code) location.hash = '#/airport/' + code;
+    if (!code || !AP[code]) return;
+    if (location.hash === '#/airport/' + code) location.hash = prevHash && !prevHash.startsWith('#/airport') ? prevHash : '#/';
+    else location.hash = '#/airport/' + code;
   });
   map.on('styleimagemissing', (e) => { if (e.id === 'tplane' && !map.hasImage('tplane')) map.addImage('tplane', tplaneImage(), { sdf: true }); });
   map.on('style.load', () => { if (!map.hasImage('tplane')) map.addImage('tplane', tplaneImage(), { sdf: true }); trafficPaint(); });
@@ -538,6 +540,14 @@ function planeEl() {
 }
 
 /* ---------- Live planes (like Flightradar), from the free ADS-B feeds ---------- */
+// adsb.lol doesn't let web pages read its answers directly (no CORS header), so the app goes through
+// a tiny relay the user runs on their own free Cloudflare account.
+const RELAY_CODE = "// Samflyer live-planes relay \u2014 paste into a Cloudflare Worker (free plan).\n// It only passes on the few adsb.lol requests the app needs and adds the\n// header iPhone Safari requires (CORS). No keys, nothing stored.\nconst UP = 'https://api.adsb.lol';\nconst ALLOWED = [\n  /^\\/v2\\/point\\/-?[\\d.]+\\/-?[\\d.]+\\/\\d+$/,\n  /^\\/v2\\/icao\\/[0-9a-fA-F,]+$/,\n  /^\\/api\\/0\\/routeset$/\n];\nconst CORS = {\n  'Access-Control-Allow-Origin': '*',\n  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',\n  'Access-Control-Allow-Headers': 'Content-Type',\n  'Access-Control-Max-Age': '86400'\n};\nexport default {\n  async fetch(req) {\n    if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });\n    const url = new URL(req.url);\n    if (url.pathname === '/') return new Response('Samflyer relay OK', { headers: CORS });\n    if (!ALLOWED.some((r) => r.test(url.pathname))) return new Response('Not allowed', { status: 404, headers: CORS });\n    const init = { method: req.method === 'POST' ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', 'User-Agent': 'samflyer-relay' } };\n    if (init.method === 'POST') init.body = (await req.text()).slice(0, 4000);\n    const res = await fetch(UP + url.pathname, init);\n    return new Response(await res.text(), { status: res.status, headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });\n  }\n};\n";
+function relayBase() { return String(db.settings.relay || '').trim().replace(/\/+$/, ''); }
+function adsbUrls(path) {
+  const r = relayBase();
+  return r ? [r + path] : ['https://api.adsb.lol' + path, 'https://api.airplanes.live' + path.replace('/v2/icao/', '/v2/hex/')];
+}
 const TR = { planes: new Map(), sel: null, follow: false, trail: [], routes: {}, timer: 0, glide: 0, busy: false, last: 0, soon: 0, note: '' };
 function tplaneImage() {
   const S = 64, c = document.createElement('canvas'); c.width = S; c.height = S;
@@ -582,10 +592,10 @@ async function fetchTraffic() {
   try {
     const c = map.getCenter(), b = map.getBounds();
     const radiusNm = Math.min(250, Math.max(25, gcMiles({ lat: c.lat, lon: c.lng }, { lat: b.getNorth(), lon: b.getEast() }) * 0.868976));
-    const urls = [`https://api.adsb.lol/v2/point/${c.lat.toFixed(3)}/${c.lng.toFixed(3)}/${Math.round(radiusNm)}`, `https://api.airplanes.live/v2/point/${c.lat.toFixed(3)}/${c.lng.toFixed(3)}/${Math.round(radiusNm)}`];
+    const urls = adsbUrls(`/v2/point/${c.lat.toFixed(3)}/${c.lng.toFixed(3)}/${Math.round(radiusNm)}`);
     let data = null;
     for (const u of urls) { try { const r = await fetch(u, { cache: 'no-store' }); if (r.ok) { data = await r.json(); break; } } catch (e) { /* try the next feed */ } }
-    if (!data) { setTrafficNote('Live planes unavailable right now'); return; }
+    if (!data) { setTrafficNote(relayBase() ? 'Live planes unavailable right now' : 'Live planes need a one-time setup in Settings'); return; }
     const now = Date.now(), seen = new Set();
     const list = (data.ac || data.aircraft || []).filter((x) => x.lat != null && x.lon != null && x.alt_baro !== 'ground')
       .map((x) => Object.assign(x, { _d: Math.hypot(x.lat - c.lat, (x.lon - c.lng) * Math.cos(c.lat * RAD)) }))
@@ -618,7 +628,7 @@ async function routeFor(p) {
   if (TR.routes[p.cs] !== undefined) return TR.routes[p.cs];
   TR.routes[p.cs] = null;
   try {
-    const r = await fetch('https://api.adsb.lol/api/0/routeset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planes: [{ callsign: p.cs, lat: p.lat, lng: p.lon }] }) });
+    const r = await fetch((relayBase() || 'https://api.adsb.lol') + '/api/0/routeset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planes: [{ callsign: p.cs, lat: p.lat, lng: p.lon }] }) });
     const j = await r.json(); const x = Array.isArray(j) ? j[0] : null;
     const codes = x && (x._airport_codes_iata || x.airport_codes || '');
     if (codes && codes !== 'unknown') { const parts = codes.split('-'); TR.routes[p.cs] = { from: parts[0], to: parts[parts.length - 1], sure: x.plausible !== false && x.plausible !== 0 }; }
@@ -1807,6 +1817,18 @@ function settingsView() {
     <div class="card"><h2>Globe</h2>${seg('globe', s.globe || 'sat', [['sat', 'Satellite'], ['day', 'Day photo'], ['flat', 'Flat map']])}
       <span class="note">${{ sat: 'NASA Earth photo in light mode, city lights at night in dark mode.', day: 'NASA daytime Earth photo all the time.', flat: 'Clean drawn map in the app colours — sharpest when zoomed in.' }[s.globe || 'sat']} City names appear as you zoom in.</span></div>
     ${alertsCardHTML()}
+    <div class="card" style="gap:10px"><div class="between"><h2>Live planes on the map</h2>${relayBase() ? '<span class="pill green">Set up</span>' : '<span class="pill grey">Not set up</span>'}</div>
+      <div class="note">The free plane feed (adsb.lol) only talks to apps through a small relay. You run your own on a free Cloudflare account: no keys, nothing to pay, about 5 minutes, easiest on a computer.</div>
+      <ol class="note" style="margin:0;padding-left:18px;line-height:1.6">
+        <li>Sign up free at <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">dash.cloudflare.com</a>.</li>
+        <li>Go to <b>Workers &amp; Pages → Create → Start with Hello World</b>, name it <b>samflyer-relay</b>, then <b>Deploy</b>.</li>
+        <li>Tap <b>Edit code</b>, delete what's there, paste the relay code (button below), then <b>Deploy</b>.</li>
+        <li>Copy its address (like <span class="num">https://samflyer-relay.yourname.workers.dev</span>) and paste it here.</li>
+      </ol>
+      <button class="btn ghost" data-act="copyRelay">Copy relay code</button>
+      <div class="field"><label for="relay">Relay address</label><input id="relay" type="url" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="https://samflyer-relay….workers.dev" value="${esc(s.relay || '')}"></div>
+      <div class="row" style="gap:8px"><button class="btn" data-act="saveRelay" style="flex:1">Save &amp; test</button>${s.relay ? '<button class="btn ghost" data-act="removeRelay" style="flex:none;padding:0 16px">Remove</button>' : ''}</div>
+    </div>
     <div class="card"><div class="between"><h2>Live flight data</h2>${hasKey() ? '<span class="pill green">On</span>' : '<span class="pill grey">Off</span>'}</div>
       ${hasKey() ? `<div class="note">Your AeroDataBox key is saved on this phone only.</div>
         <div class="grid2"><button class="btn ghost" data-act="testKey">Test key</button><button class="btn ghost" data-act="removeKey">Remove key</button></div>
@@ -1859,6 +1881,24 @@ const ACT = {
     toast(stop || `Found ${res.found} of ${res.total} planes${res.total - res.found ? ' — the rest keep the best guess' : ''}`);
     if (location.hash.startsWith('#/passport')) { navDir = null; const y = $('#content').scrollTop; route(); $('#content').scrollTop = y; appEl.scrollTop = 0; }
   },
+  copyRelay: async () => {
+    try { await navigator.clipboard.writeText(RELAY_CODE); toast('Relay code copied'); }
+    catch (e) { const t = document.createElement('textarea'); t.value = RELAY_CODE; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); toast('Relay code copied'); } catch (_) { toast('Couldn\u2019t copy. Long-press to copy instead'); } t.remove(); }
+  },
+  saveRelay: async () => {
+    let v = ($('#relay').value || '').trim().replace(/\/+$/, '');
+    if (v && !/^https:\/\//i.test(v)) v = 'https://' + v.replace(/^http:\/\//i, '');
+    db.settings.relay = v; save();
+    if (!v) { toast('Relay removed'); rerenderSettings(); return; }
+    toast('Testing…');
+    try {
+      const r = await fetch(v + '/v2/point/51.47/-0.45/40', { cache: 'no-store' });
+      const j = await r.json(); const n = (j.ac || []).length;
+      toast(`Relay works: ${n} plane${n === 1 ? '' : 's'} near Heathrow`);
+    } catch (e) { toast('Saved, but the test failed. Check the address and that you pressed Deploy'); }
+    rerenderSettings();
+  },
+  removeRelay: () => { db.settings.relay = ''; save(); toast('Relay removed'); rerenderSettings(); },
   traffic: () => {
     db.settings.traffic = !db.settings.traffic; save();
     $('#map-tools').innerHTML = trafficButton();
