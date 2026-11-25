@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.14';
+const VERSION = '1.15';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -343,18 +343,68 @@ function flapInner(str) {
     : `<span class="t" style="--d:${i}">${esc(c)}</span>`).join('');
 }
 function flap(str, size = 'md', attrs = '') { return `<span class="flap ${size}" ${attrs} aria-label="${esc(String(str).toUpperCase())}">${flapInner(str)}</span>`; }
-function updateFlap(el, str) {
-  const tmp = document.createElement('span');
-  tmp.innerHTML = flapInner(str);
-  const olds = [...el.children], news = [...tmp.children];
-  if (olds.length !== news.length) { el.innerHTML = tmp.innerHTML; return; }
-  news.forEach((n, i) => {
-    if (olds[i].textContent !== n.textContent) {
-      olds[i].textContent = n.textContent;
-      olds[i].classList.remove('flip'); void olds[i].offsetWidth; olds[i].classList.add('flip');
+/* A real split-flap: the top half of the old card falls, then the bottom half of the new one lands.
+   Digits and letters roll through up to two in-between characters, like a station board. */
+const FLAP_SEQ = ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+function flapSteps(from, to) {
+  if (from === to) return [];
+  const i = FLAP_SEQ.indexOf(from), j = FLAP_SEQ.indexOf(to);
+  if (i < 0 || j < 0) return [to];
+  const dist = (j - i + FLAP_SEQ.length) % FLAP_SEQ.length, out = [];
+  if (dist > 1) out.push(FLAP_SEQ[(i + 1) % FLAP_SEQ.length]);
+  if (dist > 2) out.push(FLAP_SEQ[(i + 2) % FLAP_SEQ.length]);
+  out.push(to);
+  return out;
+}
+function halfEl(cls, ch) { const h = document.createElement('span'); h.className = 'fh ' + cls; h.innerHTML = `<b>${esc(ch) || '&nbsp;'}</b>`; return h; }
+function flipTile(tile, steps, delay) {
+  if (!steps.length) return;
+  if (tile._flipping) { tile._flipping.cancel = true; }
+  const job = { cancel: false }; tile._flipping = job;
+  const per = steps.length > 1 ? 120 : 200, half = per / 2;
+  let from = tile.dataset.ch != null ? tile.dataset.ch : tile.textContent;
+  const run = async () => {
+    for (const to of steps) {
+      if (job.cancel) return;
+      tile.classList.add('flipping');
+      const sTop = halfEl('top', to), sBot = halfEl('bot', from), fTop = halfEl('top fly', from), fBot = halfEl('bot fly', to);
+      fBot.style.transform = 'rotateX(90deg)';
+      tile.append(sTop, sBot, fTop, fBot);
+      await fTop.animate([{ transform: 'rotateX(0deg)', filter: 'brightness(1)' }, { transform: 'rotateX(-90deg)', filter: 'brightness(.55)' }], { duration: half, easing: 'ease-in', fill: 'forwards' }).finished.catch(() => {});
+      await fBot.animate([{ transform: 'rotateX(90deg)', filter: 'brightness(1.35)' }, { transform: 'rotateX(0deg)', filter: 'brightness(1)' }], { duration: half, easing: 'ease-out', fill: 'forwards' }).finished.catch(() => {});
+      tile.firstChild.nodeType === 3 ? (tile.firstChild.nodeValue = to) : tile.prepend(document.createTextNode(to));
+      tile.dataset.ch = to; from = to;
+      [sTop, sBot, fTop, fBot].forEach((n) => n.remove());
     }
-  });
+    tile.classList.remove('flipping');
+    if (tile._flipping === job) tile._flipping = null;
+  };
+  setTimeout(run, delay);
+}
+function updateFlap(el, str) {
+  const want = [...String(str)];
+  const tiles = [...el.children];
   el.setAttribute('aria-label', String(str).toUpperCase());
+  const instant = reduceMotion();
+  // Rebuild when the shape changes (more/fewer characters), keeping old characters right-aligned so numbers roll in place.
+  const shape = (cs) => cs.map((c) => (c === ':' || c === ' ' || /[a-z]/.test(c) ? 'u' : 't')).join('');
+  const oldChars = tiles.map((t) => (t.classList.contains('u') ? t.textContent.replace(/ /, ' ') : (t.dataset.ch != null ? t.dataset.ch : t.textContent)));
+  if (shape(oldChars) !== shape(want)) {
+    const pad = want.length - oldChars.length;
+    const prev = want.map((c, i) => { const o = oldChars[i - pad]; return o != null && shape([o]) === shape([c]) ? o : ' '; });
+    el.innerHTML = want.map((c, i) => (c === ':' || c === ' ' || /[a-z]/.test(c))
+      ? `<span class="u">${c === ' ' ? '&nbsp;' : esc(c.toUpperCase())}</span>`
+      : `<span class="t still" data-ch="${esc(instant ? c : prev[i])}">${esc(instant ? c : prev[i])}</span>`).join('');
+  }
+  let n = 0;
+  [...el.children].forEach((t, i) => {
+    const c = want[i]; if (c == null) return;
+    if (t.classList.contains('u')) { const v = c === ' ' ? ' ' : c.toUpperCase(); if (t.textContent !== v) t.textContent = v; return; }
+    const cur = t.dataset.ch != null ? t.dataset.ch : t.textContent;
+    if (cur === c) return;
+    if (instant) { t.textContent = c; t.dataset.ch = c; return; }
+    flipTile(t, flapSteps(cur.toUpperCase(), c.toUpperCase()).map((x, k, arr) => (k === arr.length - 1 ? c : x)), n++ * 35);
+  });
 }
 function cd(ms) {
   if (ms <= 0) return 'NOW';
@@ -400,7 +450,9 @@ function buildStyle() {
   const sources = {
     omt: { type: 'vector', url: OFM + '/planet' },
     lines: { type: 'geojson', data: lineData },
-    aps: { type: 'geojson', data: apData }
+    aps: { type: 'geojson', data: apData },
+    traffic: { type: 'geojson', data: trafficGeo() },
+    trail: { type: 'geojson', data: trailGeo() }
   };
   const layers = [];
   if (flat) {
@@ -434,6 +486,13 @@ function buildStyle() {
       paint: { 'text-color': onImage ? '#FFFFFF' : (dark ? '#CFE3FF' : '#18324F'), 'text-halo-color': onImage ? 'rgba(0,0,0,0.75)' : halo, 'text-halo-width': 1.3,
         'text-opacity': ['interpolate', ['linear'], ['zoom'], 1.8, ['case', ['==', ['get', 'pri'], 0], 1, 0], 2.4, ['case', ['==', ['get', 'pri'], 0], 1, 0.9]] } }
   );
+  layers.push(
+    { id: 'trail', type: 'line', source: 'trail', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#FFC14D', 'line-width': 2.2, 'line-opacity': 0.9 } },
+    { id: 'traffic-sel', type: 'circle', source: 'traffic', filter: ['==', ['get', 'sel'], 1], paint: { 'circle-radius': 16, 'circle-color': 'rgba(255,193,77,0.18)', 'circle-stroke-color': '#FFC14D', 'circle-stroke-width': 1.5 } },
+    { id: 'traffic', type: 'symbol', source: 'traffic', layout: { 'icon-image': 'tplane', 'icon-rotate': ['get', 'trk'], 'icon-rotation-alignment': 'map', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 4, 0.42, 8, 0.62], 'symbol-sort-key': ['get', 'sel'] },
+      paint: { 'icon-color': ['case', ['==', ['get', 'sel'], 1], '#FFC14D', onImage || dark ? '#F3F7FF' : '#18324F'], 'icon-halo-color': onImage || dark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.8)', 'icon-halo-width': 1 } },
+    { id: 'traffic-hit', type: 'circle', source: 'traffic', paint: { 'circle-radius': 14, 'circle-color': '#000', 'circle-opacity': 0.01 } }
+  );
   return {
     version: 8, projection: { type: 'globe' },
     sky: { 'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0] },
@@ -446,7 +505,7 @@ function initMap() {
   if (!window.maplibregl) { $('#map-fallback').style.display = 'block'; return; }
   try {
     map = new maplibregl.Map({ container: 'map', style: buildStyle(), center: [10, 45], zoom: 1.1, minZoom: 0, maxZoom: 9, attributionControl: false, interactive: true, dragPan: true, scrollZoom: true, doubleClickZoom: true, touchZoomRotate: true, pitchWithRotate: false, dragRotate: false, keyboard: false, fadeDuration: 150 });
-    map.on('movestart', (e) => { if (e && e.originalEvent) userMoved = true; });
+    map.on('movestart', (e) => { if (e && e.originalEvent) { userMoved = true; if (TR.follow) { TR.follow = false; paintPlaneCard(); } } });
   } catch (e) { map = null; $('#map-fallback').textContent = "This phone can't draw the 3D map"; $('#map-fallback').style.display = 'block'; return; }
   styleKey = globeMode() + currentTheme();
   if (map.touchZoomRotate && map.touchZoomRotate.disableRotation) map.touchZoomRotate.disableRotation();
@@ -455,6 +514,10 @@ function initMap() {
     const ft = e.features && e.features[0]; const code = ft && ft.properties && ft.properties.code;
     if (code && AP[code] && location.hash !== '#/airport/' + code) location.hash = '#/airport/' + code;
   });
+  map.on('styleimagemissing', (e) => { if (e.id === 'tplane' && !map.hasImage('tplane')) map.addImage('tplane', tplaneImage(), { sdf: true }); });
+  map.on('style.load', () => { if (!map.hasImage('tplane')) map.addImage('tplane', tplaneImage(), { sdf: true }); trafficPaint(); });
+  map.on('click', 'traffic-hit', (e) => { const ft = e.features && e.features[0]; if (ft) selectPlane(ft.properties.hex); });
+  map.on('moveend', () => { if (db.settings.traffic) trafficSoon(); });
   map.on('error', (e) => {
     if (e && e.sourceId === 'sat' && globeMode() === 'night' && ++nightErrors > 6) { nightBroken = true; restyle(); }
   });
@@ -473,6 +536,122 @@ function planeEl() {
   el.innerHTML = '<svg width="30" height="30" viewBox="-15 -15 30 30" aria-hidden="true"><path d="M0,-11 L1.6,-3.5 L10,2 L10,3.8 L1.6,1.6 L1.2,7.5 L4.2,9.6 L4.2,10.8 L0,9.8 L-4.2,10.8 L-4.2,9.6 L-1.2,7.5 L-1.6,1.6 L-10,3.8 L-10,2 L-1.6,-3.5 Z" fill="currentColor"/></svg>';
   return el;
 }
+
+/* ---------- Live planes (like Flightradar), from the free ADS-B feeds ---------- */
+const TR = { planes: new Map(), sel: null, follow: false, trail: [], routes: {}, timer: 0, glide: 0, busy: false, last: 0, soon: 0, note: '' };
+function tplaneImage() {
+  const S = 64, c = document.createElement('canvas'); c.width = S; c.height = S;
+  const g = c.getContext('2d'); g.translate(S / 2, S / 2); g.scale(2.6, 2.6);
+  g.fillStyle = '#fff';
+  g.fill(new Path2D('M0,-11 L1.6,-3.5 L10,2 L10,3.8 L1.6,1.6 L1.2,7.5 L4.2,9.6 L4.2,10.8 L0,9.8 L-4.2,10.8 L-4.2,9.6 L-1.2,7.5 L-1.6,1.6 L-10,3.8 L-10,2 L-1.6,-3.5 Z'));
+  return g.getImageData(0, 0, S, S);
+}
+function trafficGeo() {
+  const now = Date.now(), feats = [];
+  TR.planes.forEach((p, hex) => {
+    // glide: move each plane along its heading since its last report (max 30 s ahead)
+    const dt = Math.min(30, (now - p.at) / 1000), d = (p.gs || 0) * 1.852 / 3600 * dt; // km
+    const tr = (p.trk || 0) * RAD, lat = p.lat + (d / 111.2) * Math.cos(tr), lon = p.lon + (d / (111.2 * Math.max(0.1, Math.cos(p.lat * RAD)))) * Math.sin(tr);
+    p.vlat = lat; p.vlon = lon;
+    feats.push({ type: 'Feature', properties: { hex, trk: p.trk || 0, sel: hex === TR.sel ? 1 : 0 }, geometry: { type: 'Point', coordinates: [lon, lat] } });
+  });
+  return { type: 'FeatureCollection', features: feats };
+}
+function trailGeo() {
+  const p = TR.sel && TR.planes.get(TR.sel);
+  const pts = TR.trail.slice(); if (p && p.vlat != null) pts.push([p.vlon, p.vlat]);
+  return { type: 'FeatureCollection', features: pts.length > 1 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: pts } }] : [] };
+}
+function trafficPaint() {
+  if (!map || !mapReady) return;
+  const s1 = map.getSource('traffic'), s2 = map.getSource('trail');
+  if (s1) s1.setData(trafficGeo()); if (s2) s2.setData(trailGeo());
+  if (TR.follow && TR.sel) { const p = TR.planes.get(TR.sel); if (p && p.vlat != null) map.easeTo({ center: [p.vlon, p.vlat], duration: 900, essential: true }); }
+}
+function trafficSoon() { clearTimeout(TR.soon); TR.soon = setTimeout(fetchTraffic, 350); }
+function trafficButton() {
+  const on = !!db.settings.traffic;
+  return `<button class="round live-btn${on ? ' on' : ''}" data-act="traffic" aria-pressed="${on}" aria-label="Live planes ${on ? 'on' : 'off'}"><svg width="20" height="20" viewBox="-12 -12 24 24" aria-hidden="true"><path d="M0,-11 L1.6,-3.5 L10,2 L10,3.8 L1.6,1.6 L1.2,7.5 L4.2,9.6 L4.2,10.8 L0,9.8 L-4.2,10.8 L-4.2,9.6 L-1.2,7.5 L-1.6,1.6 L-10,3.8 L-10,2 L-1.6,-3.5 Z" fill="currentColor"/></svg></button>`;
+}
+function setTrafficNote(t) { TR.note = t; const n = $('#traffic-note'); if (n) { n.textContent = t; n.hidden = !t; } }
+async function fetchTraffic() {
+  if (!db.settings.traffic || !map || !mapReady || document.body.classList.contains('no-map') || document.hidden) return;
+  const z = map.getZoom();
+  if (z < 4) { TR.planes.clear(); trafficPaint(); setTrafficNote('Zoom in to see live planes'); return; }
+  if (TR.busy) return; TR.busy = true;
+  try {
+    const c = map.getCenter(), b = map.getBounds();
+    const radiusNm = Math.min(250, Math.max(25, gcMiles({ lat: c.lat, lon: c.lng }, { lat: b.getNorth(), lon: b.getEast() }) * 0.868976));
+    const urls = [`https://api.adsb.lol/v2/point/${c.lat.toFixed(3)}/${c.lng.toFixed(3)}/${Math.round(radiusNm)}`, `https://api.airplanes.live/v2/point/${c.lat.toFixed(3)}/${c.lng.toFixed(3)}/${Math.round(radiusNm)}`];
+    let data = null;
+    for (const u of urls) { try { const r = await fetch(u, { cache: 'no-store' }); if (r.ok) { data = await r.json(); break; } } catch (e) { /* try the next feed */ } }
+    if (!data) { setTrafficNote('Live planes unavailable right now'); return; }
+    const now = Date.now(), seen = new Set();
+    const list = (data.ac || data.aircraft || []).filter((x) => x.lat != null && x.lon != null && x.alt_baro !== 'ground')
+      .map((x) => Object.assign(x, { _d: Math.hypot(x.lat - c.lat, (x.lon - c.lng) * Math.cos(c.lat * RAD)) }))
+      .sort((p, q) => p._d - q._d).slice(0, 300);
+    list.forEach((x) => {
+      const hex = x.hex; seen.add(hex);
+      const at = now - Math.min(30, x.seen_pos || x.seen || 0) * 1000;
+      TR.planes.set(hex, { hex, lat: x.lat, lon: x.lon, trk: x.track != null ? x.track : (x.true_heading || 0), gs: x.gs || 0, alt: typeof x.alt_baro === 'number' ? x.alt_baro : x.alt_geom, cs: (x.flight || '').trim(), t: x.t || '', r: x.r || '', at });
+      if (hex === TR.sel) { TR.trail.push([x.lon, x.lat]); if (TR.trail.length > 200) TR.trail.shift(); }
+    });
+    TR.planes.forEach((p, hex) => { if (!seen.has(hex) && hex !== TR.sel) TR.planes.delete(hex); });
+    setTrafficNote(list.length ? '' : 'No planes reported here');
+    trafficPaint();
+    if (TR.sel) paintPlaneCard();
+  } finally { TR.busy = false; }
+}
+function startTraffic() {
+  stopTraffic(true);
+  if (!db.settings.traffic) return;
+  fetchTraffic();
+  TR.timer = setInterval(fetchTraffic, 5000);
+  TR.glide = setInterval(trafficPaint, 1000);
+}
+function stopTraffic(keep) {
+  clearInterval(TR.timer); clearInterval(TR.glide); TR.timer = TR.glide = 0;
+  if (!keep) { TR.planes.clear(); closePlane(); trafficPaint(); setTrafficNote(''); }
+}
+async function routeFor(p) {
+  if (!p.cs) return null;
+  if (TR.routes[p.cs] !== undefined) return TR.routes[p.cs];
+  TR.routes[p.cs] = null;
+  try {
+    const r = await fetch('https://api.adsb.lol/api/0/routeset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planes: [{ callsign: p.cs, lat: p.lat, lng: p.lon }] }) });
+    const j = await r.json(); const x = Array.isArray(j) ? j[0] : null;
+    const codes = x && (x._airport_codes_iata || x.airport_codes || '');
+    if (codes && codes !== 'unknown') { const parts = codes.split('-'); TR.routes[p.cs] = { from: parts[0], to: parts[parts.length - 1], sure: x.plausible !== false && x.plausible !== 0 }; }
+  } catch (e) { /* route stays unknown */ }
+  return TR.routes[p.cs];
+}
+function selectPlane(hex) {
+  const p = TR.planes.get(hex); if (!p) return;
+  TR.sel = hex; TR.follow = false; TR.trail = [[p.lon, p.lat]];
+  trafficPaint(); paintPlaneCard();
+  routeFor(p).then(() => { if (TR.sel === hex) paintPlaneCard(); });
+}
+function closePlane() { TR.sel = null; TR.follow = false; TR.trail = []; const c = $('#plane-card'); if (c) c.hidden = true; trafficPaint(); }
+function paintPlaneCard() {
+  const c = $('#plane-card'), p = TR.sel && TR.planes.get(TR.sel);
+  if (!c) return;
+  if (!p) { c.hidden = true; return; }
+  const u = db.settings.units, rt = TR.routes[p.cs];
+  const alt = p.alt != null ? `${nf.format(p.alt)} ft` : '—';
+  const spd = u === 'nm' ? `${nf.format(p.gs)} kt` : u === 'mi' ? `${nf.format(p.gs * 1.15078)} mph` : `${nf.format(p.gs * 1.15078)} mph · ${nf.format(p.gs)} kt`;
+  const type = p.t ? (acType(p.t) || {}).name || p.t : '';
+  const apName = (code) => (AP[code] ? AP[code].city : code);
+  c.innerHTML = `<div class="between" style="gap:10px"><div style="min-width:0"><div class="row" style="gap:8px">${flap((p.cs || p.r || p.hex).toUpperCase().slice(0, 8), 'sm')}</div>
+      <div class="muted" style="font-size:12px;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc([type, p.r].filter(Boolean).join(' · ') || 'Unknown aircraft')}</div></div>
+      <button class="round" data-act="planeClose" aria-label="Close" style="flex:none">${ICON.close}</button></div>
+    <div style="font-size:15px;font-weight:800;margin-top:8px">${rt ? `${esc(rt.from)} → ${esc(rt.to)} <span class="muted" style="font-size:12px;font-weight:600">${esc(apName(rt.from))} → ${esc(apName(rt.to))}${rt.sure ? '' : ' · unconfirmed'}</span>` : `<span class="muted" style="font-size:13px;font-weight:600">${p.cs ? 'Route unknown' : 'No callsign'}</span>`}</div>
+    <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:8px;margin-top:8px"><div class="stat"><span class="lbl">Altitude</span><span class="big num" style="font-size:15px;white-space:nowrap">${alt}</span></div><div class="stat"><span class="lbl">Speed</span><span class="big num" style="font-size:15px">${spd}</span></div></div>
+    <button class="btn ${TR.follow ? '' : 'ghost'}" data-act="planeFollow" style="margin-top:8px;min-height:44px">${TR.follow ? 'Following — tap to stop' : 'Follow on map'}</button>`;
+  c.hidden = false;
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && db.settings.traffic) fetchTraffic(); });
+window.SF_DEBUG = { TR, selectPlane };
+
 /* routes: [{a, b, progress (0..1 or null), pos, dim}] */
 function drawRoutes(routes, opts = {}) {
   lastRoutes = { routes, opts };
@@ -725,7 +904,11 @@ function layout({ useMap = true, tabs = true, snapTo = 'half', left = '', right 
   if (posTimer) { clearInterval(posTimer); posTimer = null; }
   const wasMap = !document.body.dataset.nomap;
   document.body.dataset.nomap = useMap ? '' : '1';
-  if (useMap) { initMap(); setSnap(snapTo, navDir != null && wasMap && !reduceMotion()); } else { sheet.classList.remove('anim'); sheet.style.transition = ''; sheet.style.transform = 'none'; }
+  if (useMap) {
+    initMap(); setSnap(snapTo, navDir != null && wasMap && !reduceMotion());
+    $('#map-tools').innerHTML = trafficButton();
+    if (db.settings.traffic && !TR.timer) startTraffic();
+  } else { sheet.classList.remove('anim'); sheet.style.transition = ''; sheet.style.transform = 'none'; stopTraffic(true); closePlane(); }
   $('#content').scrollTop = 0;
 }
 let navDir = null, prevScreen = null, pillTab = null;
@@ -1676,6 +1859,14 @@ const ACT = {
     toast(stop || `Found ${res.found} of ${res.total} planes${res.total - res.found ? ' — the rest keep the best guess' : ''}`);
     if (location.hash.startsWith('#/passport')) { navDir = null; const y = $('#content').scrollTop; route(); $('#content').scrollTop = y; appEl.scrollTop = 0; }
   },
+  traffic: () => {
+    db.settings.traffic = !db.settings.traffic; save();
+    $('#map-tools').innerHTML = trafficButton();
+    if (db.settings.traffic) { startTraffic(); if (map && map.getZoom() < 4) toast('Live planes on. Zoom in to see them'); }
+    else stopTraffic();
+  },
+  planeClose: () => closePlane(),
+  planeFollow: () => { TR.follow = !TR.follow; paintPlaneCard(); trafficPaint(); },
   friendsFilter: (el, v) => { friendsFilter = v; navDir = null; friendsView(); },
   defLeave: (el, v) => { db.settings.leaveH = parseFloat(v); save(); rerenderSettings(); },
   leave: (el, v) => {

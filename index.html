@@ -148,6 +148,27 @@ details summary{cursor:pointer;font-weight:700;font-size:14px;min-height:44px;di
 
 
 
+
+/* ---- Split-flap flip ---- */
+.flap .t{transform-style:preserve-3d}
+.flap .t.still{animation:none}
+.flap .t.flipping{color:transparent}
+.flap .t.flipping:after{z-index:5}
+.flap .fh{position:absolute;left:0;right:0;height:50%;overflow:hidden;background:#1C1C1E;color:#FFC14D;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.flap .fh b{position:absolute;left:0;right:0;height:200%;display:flex;align-items:center;justify-content:center;font-weight:700}
+.flap .fh.top{top:0;border-radius:4px 4px 0 0;transform-origin:50% 100%}
+.flap .fh.top b{top:0}
+.flap .fh.bot{bottom:0;border-radius:0 0 4px 4px;transform-origin:50% 0}
+.flap .fh.bot b{bottom:0}
+.flap .fh.fly{z-index:3}
+/* ---- Live planes ---- */
+#map-tools{position:absolute;z-index:20;top:calc(var(--safe-top) + 66px);right:16px}
+body.no-map #map-tools,body.no-map #traffic-note,body.no-map #plane-card{display:none}
+.live-btn.on{background:#FFC14D;color:#1C1C1E}
+#traffic-note{position:absolute;z-index:20;top:calc(var(--safe-top) + 72px);left:50%;transform:translateX(-50%);background:var(--sheet);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);color:var(--text);font-size:12px;font-weight:700;padding:7px 12px;border-radius:999px;white-space:nowrap;pointer-events:none}
+#plane-card{position:absolute;z-index:21;left:12px;right:70px;top:calc(var(--safe-top) + 66px);background:var(--sheet-solid);border:1px solid var(--line);border-radius:20px;padding:12px 12px 12px 14px;box-shadow:0 10px 30px rgba(0,0,0,.3);animation:cardIn .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes cardIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){#plane-card{animation:none}}
 /* ---- Fun facts + soft updates ---- */
 .facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .fact{background:var(--card);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:3px;min-width:0}
@@ -244,6 +265,9 @@ button,a,.tab,.seg,.chips,.flap,.pill,.grab{-webkit-user-select:none;user-select
 <div id="map" aria-hidden="true"></div>
 <div id="map-fallback">Map needs an internet connection</div>
 <div id="topbar"><div id="top-left"></div><div id="top-right"></div></div>
+<div id="map-tools"></div>
+<div id="traffic-note" hidden></div>
+<div id="plane-card" hidden></div>
 <section id="sheet" aria-label="Details">
   <div class="grab" id="grab"><div class="handle"></div><span class="credit" id="credit">© OpenStreetMap · OpenFreeMap · NASA</span><div id="grab-content"></div></div>
   <div id="content"></div>
