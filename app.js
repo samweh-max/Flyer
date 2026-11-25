@@ -1,7 +1,7 @@
 /* Samflyer v1 — a personal Flighty-style flight tracker. Everything is stored on this device. */
 (() => {
 'use strict';
-const VERSION = '1.16';
+const VERSION = '1.17';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -543,7 +543,7 @@ function planeEl() {
 // adsb.lol doesn't let web pages read its answers directly (no CORS header), so the app goes through
 // a tiny relay the user runs on their own free Cloudflare account.
 const RELAY_CODE = "// Samflyer live-planes relay \u2014 paste into a Cloudflare Worker (free plan).\n// It only passes on the few adsb.lol requests the app needs and adds the\n// header iPhone Safari requires (CORS). No keys, nothing stored.\nconst UP = 'https://api.adsb.lol';\nconst ALLOWED = [\n  /^\\/v2\\/point\\/-?[\\d.]+\\/-?[\\d.]+\\/\\d+$/,\n  /^\\/v2\\/icao\\/[0-9a-fA-F,]+$/,\n  /^\\/api\\/0\\/routeset$/\n];\nconst CORS = {\n  'Access-Control-Allow-Origin': '*',\n  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',\n  'Access-Control-Allow-Headers': 'Content-Type',\n  'Access-Control-Max-Age': '86400'\n};\nexport default {\n  async fetch(req) {\n    if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });\n    const url = new URL(req.url);\n    if (url.pathname === '/') return new Response('Samflyer relay OK', { headers: CORS });\n    if (!ALLOWED.some((r) => r.test(url.pathname))) return new Response('Not allowed', { status: 404, headers: CORS });\n    const init = { method: req.method === 'POST' ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', 'User-Agent': 'samflyer-relay' } };\n    if (init.method === 'POST') init.body = (await req.text()).slice(0, 4000);\n    const res = await fetch(UP + url.pathname, init);\n    return new Response(await res.text(), { status: res.status, headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });\n  }\n};\n";
-function relayBase() { return String(db.settings.relay || '').trim().replace(/\/+$/, ''); }
+function relayBase() { const v = String(db.settings.relay || '').trim(); if (!v) return ''; try { return new URL(/^https?:\/\//i.test(v) ? v : 'https://' + v).origin; } catch (e) { return v.replace(/\/+$/, ''); } }
 function adsbUrls(path) {
   const r = relayBase();
   return r ? [r + path] : ['https://api.adsb.lol' + path, 'https://api.airplanes.live' + path.replace('/v2/icao/', '/v2/hex/')];
@@ -947,12 +947,12 @@ function applyEnter(dir, contentOnly) {
   }
 }
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, ms = 2600) {
   let t = $('.toast');
   if (!t) { t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); appEl.appendChild(t); }
   t.textContent = msg;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.remove(), 2600);
+  toastTimer = setTimeout(() => t.remove(), ms);
 }
 const pill = (st) => `<span class="pill ${st.cls}">${esc(st.label)}</span>`;
 
@@ -1886,16 +1886,19 @@ const ACT = {
     catch (e) { const t = document.createElement('textarea'); t.value = RELAY_CODE; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); toast('Relay code copied'); } catch (_) { toast('Couldn\u2019t copy. Long-press to copy instead'); } t.remove(); }
   },
   saveRelay: async () => {
-    let v = ($('#relay').value || '').trim().replace(/\/+$/, '');
-    if (v && !/^https:\/\//i.test(v)) v = 'https://' + v.replace(/^http:\/\//i, '');
+    let v = ($('#relay').value || '').trim();
+    if (v) { try { v = new URL(/^https?:\/\//i.test(v) ? v : 'https://' + v).origin.replace(/^http:/, 'https:'); } catch (e) { return toast('That doesn\u2019t look like a web address'); } }
     db.settings.relay = v; save();
     if (!v) { toast('Relay removed'); rerenderSettings(); return; }
     toast('Testing…');
     try {
       const r = await fetch(v + '/v2/point/51.47/-0.45/40', { cache: 'no-store' });
-      const j = await r.json(); const n = (j.ac || []).length;
+      const txt = await r.text();
+      if (!r.ok) throw new Error(`the relay answered ${r.status}${/not allowed/i.test(txt) ? ' (old relay code? paste it again)' : ''}`);
+      let j; try { j = JSON.parse(txt); } catch (e) { throw new Error(/hello world/i.test(txt) ? 'the relay still has the Hello World code' : 'the answer wasn\u2019t plane data'); }
+      const n = (j.ac || []).length;
       toast(`Relay works: ${n} plane${n === 1 ? '' : 's'} near Heathrow`);
-    } catch (e) { toast('Saved, but the test failed. Check the address and that you pressed Deploy'); }
+    } catch (e) { toast(`Test failed: ${e && e.message && e.message !== 'Load failed' && e.message !== 'Failed to fetch' ? e.message : 'couldn\u2019t reach ' + v.replace(/^https:\/\//, '')}`, 6000); }
     rerenderSettings();
   },
   removeRelay: () => { db.settings.relay = ''; save(); toast('Relay removed'); rerenderSettings(); },
